@@ -114,6 +114,8 @@ jobs:
                       android:taskAffinity=""
                       android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+                  <activity android:name=".HiddenAppsActivity" android:exported="false" android:theme="@android:style/Theme.Material.NoActionBar" />
+
                   <service
                       android:name=".ClockDream"
                       android:exported="true"
@@ -677,37 +679,122 @@ jobs:
                       if(key==KeyEvent.KEYCODE_BACK && movingMode){ finishEditing(); Toast.makeText(getContext(),"Ordem salva",Toast.LENGTH_SHORT).show(); ((Activity)getContext()).finish(); return true; }
                       if(key==KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount()>=1 && !movingMode && !longPressHandled){
                           longPressHandled=true;
-                          new AlertDialog.Builder(getContext()).setTitle(e.label).setItems(new String[]{"Mover apps","Ocultar esse app"},(dlg,which)->{
-                              if(which==0){ movingMode=true; movingEntry=e; targetIndex=entries.indexOf(e); build(); int idx=entries.indexOf(e); if(idx>=0){View item=row.getChildAt(idx); item.requestFocus(); item.animate().translationY(-dp(10)).setDuration(160).start();} Toast.makeText(getContext(),"Mover: use as setas; OK para posicionar; Voltar para salvar",Toast.LENGTH_LONG).show(); }
-                              else hideApp(e);
-                          }).show(); return true;
+                          showAppActions(e); return true;
                       }
                       if(movingMode){
-                          if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){int next=at+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1); if(next>=0&&next<entries.size()){View target=row.getChildAt(next); if(target!=null) target.requestFocus();} return true;}
+                          if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){
+                              if(movingEntry==null) movingEntry=e;
+                              int old=entries.indexOf(movingEntry), dest=old+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1);
+                              if(old>=0&&dest>=0&&dest<entries.size()){
+                                  Entry item=entries.remove(old); entries.add(dest,item); saveOrder(); build();
+                                  int idx=entries.indexOf(movingEntry); if(idx>=0){View itemView=row.getChildAt(idx); itemView.requestFocus(); itemView.animate().translationY(-dp(10)).setDuration(130).start();}
+                              }
+                              return true;
+                          }
                           if(key==KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount()==0){
-                              if(movingEntry==null){movingEntry=e;} else if(movingEntry!=e){ int old=entries.indexOf(movingEntry), dest=entries.indexOf(e); if(old>=0&&dest>=0){Entry item=entries.remove(old); entries.add(dest,item);} }
-                              saveOrder(); build(); int idx=entries.indexOf(movingEntry); if(idx>=0){View item=row.getChildAt(idx); item.requestFocus(); item.animate().translationY(-dp(10)).setDuration(150).start();} return true;
+                              // OK fixa a posição atual; a sessão de edição continua ativa.
+                              movingEntry=e; saveOrder();
+                              Toast.makeText(getContext(),e.label+" — posição confirmada",Toast.LENGTH_SHORT).show();
+                              return true;
                           }
                           if(key==KeyEvent.KEYCODE_DPAD_DOWN) return true;
                       }
                       if(key==KeyEvent.KEYCODE_DPAD_DOWN) return true;
                       return false;
                   });
-                  b.setOnClickListener(v->{ if(movingMode){ if(movingEntry==null) movingEntry=e; else if(movingEntry!=e){int old=entries.indexOf(movingEntry),dest=entries.indexOf(e);if(old>=0&&dest>=0){Entry item=entries.remove(old);entries.add(dest,item);saveOrder();build();}} return; }
+                  b.setOnClickListener(v->{ if(movingMode){ movingEntry=e; b.requestFocus(); Toast.makeText(getContext(),"Selecionado para mover: "+e.label,Toast.LENGTH_SHORT).show(); return; }
                       b.setClickable(false); icon.animate().scaleX(.88f).scaleY(.88f).setDuration(80).withEndAction(()->launch(e,b,icon)).start(); });
                   return b;
               }
-              private void hideApp(Entry e){Set<String> hidden=hiddenSet();hidden.add(e.pkg);prefs().edit().putStringSet(HIDDEN,hidden).apply();entries.remove(e);saveOrder();((Activity)getContext()).finish();}
-              private void saveOrder(){if(entries==null)return;StringBuilder s=new StringBuilder();for(Entry e:entries){if(s.length()>0)s.append('|');s.append(e.pkg);}prefs().edit().putString(ORDER,s.toString()).apply();}
-              static void showHiddenApps(Context c){
-                  PackageManager pm=c.getPackageManager(); Set<String> hidden=new HashSet<>(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));
-                  if(hidden.isEmpty()){new AlertDialog.Builder(c).setTitle("Apps ocultos").setMessage("Não há aplicativos ocultos.").setPositiveButton("OK",null).show();return;}
-                  List<String> pkgs=new ArrayList<>(hidden), labels=new ArrayList<>(); Map<String,String> labelToPkg=new LinkedHashMap<>();
-                  for(String pkg:pkgs){try{String label=String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg,0)));labels.add(label);labelToPkg.put(label,pkg);}catch(Exception ignored){labels.add(pkg);labelToPkg.put(pkg,pkg);}}
-                  String[] opts=new String[labels.size()];for(int i=0;i<opts.length;i++)opts[i]=labels.get(i);
-                  new AlertDialog.Builder(c).setTitle("Apps ocultos").setItems(opts,(dlg,which)->{String pkg=labelToPkg.get(opts[which]);Set<String> now=new HashSet<>(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));now.remove(pkg);c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putStringSet(HIDDEN,now).apply();Toast.makeText(c,opts[which]+" voltou para Aplicativos",Toast.LENGTH_SHORT).show();}).setNegativeButton("Fechar",null).show();
+              private void hideApp(Entry e){
+                  int oldIndex=entries.indexOf(e); Set<String> hidden=hiddenSet(); hidden.add(e.pkg);
+                  prefs().edit().putStringSet(HIDDEN,hidden).apply(); entries.remove(e); movingMode=false; movingEntry=null; targetIndex=-1; saveOrder(); build();
+                  if(entries.isEmpty()){ close(); Toast.makeText(getContext(),"Aplicativo ocultado",Toast.LENGTH_SHORT).show(); return; }
+                  int idx=Math.max(0,Math.min(oldIndex,entries.size()-1)); View next=row.getChildAt(idx); if(next!=null) next.requestFocus();
+                  Toast.makeText(getContext(),e.label+" ocultado",Toast.LENGTH_SHORT).show();
               }
+              private void showAppActions(Entry e){
+                  final android.app.Dialog dialog=new android.app.Dialog(getContext());
+                  LinearLayout box=new LinearLayout(getContext()); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(dp(22),dp(20),dp(22),dp(16));
+                  GradientDrawable back=new GradientDrawable(); back.setColor(0xF20D1422); back.setCornerRadius(dp(22)); back.setStroke(dp(1),0x664DA3FF); box.setBackground(back);
+                  TextView title=new TextView(getContext()); title.setText(e.label); title.setTextColor(Color.WHITE); title.setTextSize(20); title.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD)); title.setPadding(dp(4),0,dp(4),dp(16)); box.addView(title);
+                  LinearLayout move=actionOption("Mover apps","Reorganize a posição na lista",true); box.addView(move);
+                  LinearLayout hide=actionOption("Ocultar esse app","Remover da lista sem desinstalar",false); LinearLayout.LayoutParams hp=new LinearLayout.LayoutParams(-1,-2); hp.topMargin=dp(8); box.addView(hide,hp);
+                  move.setOnClickListener(v->{dialog.dismiss(); movingMode=true; movingEntry=e; saveOrder(); build(); int idx=entries.indexOf(e); if(idx>=0){View item=row.getChildAt(idx); item.requestFocus(); item.animate().translationY(-dp(10)).setDuration(160).start();} Toast.makeText(getContext(),"Use ◀ ▶ para mover em tempo real; Voltar salva",Toast.LENGTH_LONG).show();});
+                  hide.setOnClickListener(v->{dialog.dismiss();hideApp(e);});
+                  dialog.setContentView(box); if(dialog.getWindow()!=null)dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                  dialog.show(); if(dialog.getWindow()!=null){dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);dialog.getWindow().setLayout(Math.min(dp(380),(int)(getResources().getDisplayMetrics().widthPixels*.8f)),-2);} move.requestFocus();
+              }
+              private LinearLayout actionOption(String title,String subtitle,boolean primary){
+                  LinearLayout item=new LinearLayout(getContext()); item.setOrientation(LinearLayout.VERTICAL); item.setPadding(dp(16),dp(12),dp(16),dp(12));
+                  GradientDrawable bg=new GradientDrawable(); bg.setColor(primary?0xFF172B49:0xFF171D2A); bg.setCornerRadius(dp(14)); bg.setStroke(dp(1),primary?0xFF4DA3FF:0x334DA3FF); item.setBackground(bg); item.setFocusable(true); item.setClickable(true);
+                  TextView t=new TextView(getContext());t.setText(title);t.setTextColor(Color.WHITE);t.setTextSize(16);t.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD));item.addView(t);
+                  TextView sub=new TextView(getContext());sub.setText(subtitle);sub.setTextColor(0xFFB8C7DE);sub.setTextSize(12);LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2);sp.topMargin=dp(3);item.addView(sub,sp);
+                  item.setOnFocusChangeListener((v,focus)->{GradientDrawable f=new GradientDrawable();f.setColor(focus?0xFF203B61:(primary?0xFF172B49:0xFF171D2A));f.setCornerRadius(dp(14));f.setStroke(dp(focus?2:1),focus?0xFF7CB8FF:(primary?0xFF4DA3FF:0x334DA3FF));v.setBackground(f);v.animate().scaleX(focus?1.02f:1f).scaleY(focus?1.02f:1f).setDuration(120).start();});
+                  item.setContentDescription(t.getText()+". "+sub.getText());
+                  return item;
+              }
+              private void saveOrder(){if(entries==null)return;StringBuilder s=new StringBuilder();for(Entry e:entries){if(s.length()>0)s.append('|');s.append(e.pkg);}prefs().edit().putString(ORDER,s.toString()).apply();}
+              static void showHiddenApps(Context c){ Intent i=new Intent(c, HiddenAppsActivity.class); if(!(c instanceof Activity)) i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); c.startActivity(i); }
               private void launch(Entry e,View b,ImageView icon){Intent i=new Intent(Intent.ACTION_MAIN);i.addCategory(e.category);i.setComponent(e.name);i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);try{getContext().startActivity(i);if(onLaunched!=null)onLaunched.run();}catch(Exception ex){Toast.makeText(getContext(),"Não foi possível abrir",Toast.LENGTH_SHORT).show();icon.setAlpha(1f);b.setClickable(true);}}
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/HiddenAppsActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.graphics.Outline;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.graphics.drawable.Drawable;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.ViewOutlineProvider;
+          import android.widget.FrameLayout;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Set;
+
+          public class HiddenAppsActivity extends Activity {
+              private static final String PREFS="apps_bar", HIDDEN="hidden";
+              private LinearLayout list;
+              private int dp(float v){return (int)(v*getResources().getDisplayMetrics().density);}
+              @Override public void onCreate(Bundle b){super.onCreate(b);getWindow().setStatusBarColor(Color.rgb(8,12,20));getWindow().setNavigationBarColor(Color.rgb(8,12,20));
+                  FrameLayout root=new FrameLayout(this);root.setBackgroundColor(Color.rgb(8,12,20));
+                  LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(28),dp(22),dp(28),dp(22));
+                  root.addView(content,new FrameLayout.LayoutParams(-1,-1));
+                  TextView title=new TextView(this);title.setText("Apps ocultos");title.setTextColor(Color.WHITE);title.setTextSize(27);title.setTypeface(Typeface.create("sans-serif-medium",Typeface.BOLD));content.addView(title);
+                  TextView hint=new TextView(this);hint.setText("Selecione um aplicativo para restaurá-lo à linha Aplicativos.");hint.setTextColor(0xFF9EADC3);hint.setTextSize(14);LinearLayout.LayoutParams h=new LinearLayout.LayoutParams(-1,-2);h.topMargin=dp(5);h.bottomMargin=dp(18);content.addView(hint,h);
+                  ScrollView sc=new ScrollView(this);sc.setFillViewport(true);list=new LinearLayout(this);list.setOrientation(LinearLayout.VERTICAL);sc.addView(list);content.addView(sc,new LinearLayout.LayoutParams(-1,0,1));
+                  TextView back=new TextView(this);back.setText("Voltar");back.setTextColor(Color.WHITE);back.setTextSize(15);back.setGravity(Gravity.CENTER);back.setFocusable(true);back.setPadding(dp(20),dp(12),dp(20),dp(12));GradientDrawable bb=new GradientDrawable();bb.setColor(0xFF172B49);bb.setCornerRadius(dp(14));bb.setStroke(dp(1),0xFF4DA3FF);back.setBackground(bb);LinearLayout.LayoutParams bl=new LinearLayout.LayoutParams(-2,-2);bl.topMargin=dp(14);content.addView(back,bl);back.setOnClickListener(v->finish());back.setOnKeyListener((v,k,e)->{if(k==KeyEvent.KEYCODE_BACK&&e.getAction()==KeyEvent.ACTION_DOWN){finish();return true;}return false;});
+                  setContentView(root);render();
+              }
+              private void render(){list.removeAllViews();PackageManager pm=getPackageManager();Set<String> hidden=new HashSet<>(getSharedPreferences(PREFS,MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));List<String> pkgs=new ArrayList<>(hidden);Collections.sort(pkgs,(a,b)->label(a,pm).compareToIgnoreCase(label(b,pm)));
+                  if(pkgs.isEmpty()){TextView empty=new TextView(this);empty.setText("Nenhum aplicativo oculto");empty.setTextColor(0xFFB8C7DE);empty.setTextSize(17);empty.setGravity(Gravity.CENTER);empty.setPadding(0,dp(40),0,dp(40));list.addView(empty,new LinearLayout.LayoutParams(-1,-2));return;}
+                  for(String pkg:pkgs){String name=label(pkg,pm);Drawable drawable=null;try{drawable=pm.getApplicationIcon(pkg);}catch(Exception ignored){};LinearLayout card=new LinearLayout(this);card.setGravity(Gravity.CENTER_VERTICAL);card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setFocusable(true);card.setClickable(true);GradientDrawable cb=new GradientDrawable();cb.setColor(0xFF111A2A);cb.setCornerRadius(dp(16));cb.setStroke(dp(1),0x334DA3FF);card.setBackground(cb);
+                      ImageView icon=new ImageView(this);GradientDrawable circle=new GradientDrawable();circle.setShape(GradientDrawable.OVAL);circle.setColor(0xFF202B3D);icon.setBackground(circle);icon.setOutlineProvider(new ViewOutlineProvider(){@Override public void getOutline(View v,Outline o){o.setOval(0,0,v.getWidth(),v.getHeight());}});icon.setClipToOutline(true);icon.setScaleType(ImageView.ScaleType.FIT_CENTER);icon.setPadding(dp(4),dp(4),dp(4),dp(4));icon.setImageDrawable(drawable);card.addView(icon,new LinearLayout.LayoutParams(dp(52),dp(52)));
+                      TextView label=new TextView(this);label.setText(name);label.setTextColor(Color.WHITE);label.setTextSize(16);label.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);lp.leftMargin=dp(14);card.addView(label,lp);
+                      TextView restore=new TextView(this);restore.setText("Restaurar");restore.setTextColor(0xFF9BCBFF);restore.setTextSize(14);card.addView(restore);
+                      LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(-1,-2);cp.bottomMargin=dp(10);list.addView(card,cp);
+                      card.setOnFocusChangeListener((v,f)->{GradientDrawable st=new GradientDrawable();st.setColor(f?0xFF1B2D49:0xFF111A2A);st.setCornerRadius(dp(16));st.setStroke(dp(f?2:1),f?0xFF4DA3FF:0x334DA3FF);v.setBackground(st);v.animate().scaleX(f?1.015f:1f).scaleY(f?1.015f:1f).setDuration(120).start();});
+                      card.setOnClickListener(v->{Set<String> now=new HashSet<>(getSharedPreferences(PREFS,MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));now.remove(pkg);getSharedPreferences(PREFS,MODE_PRIVATE).edit().putStringSet(HIDDEN,now).apply();Toast.makeText(this,name+" voltou para Aplicativos",Toast.LENGTH_SHORT).show();render();});
+                  }
+              }
+              private String label(String pkg,PackageManager pm){try{return String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg,0)));}catch(Exception e){return pkg;}}
+              @Override public void onBackPressed(){finish();}
           }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/PanelActivity.java <<'EOF_FILE'
