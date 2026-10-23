@@ -49,12 +49,21 @@ jobs:
               namespace 'com.painel.lateral'
               compileSdk 34
 
+              signingConfigs {
+                  debug {
+                      storeFile file('debug.keystore')
+                      storePassword 'android'
+                      keyAlias 'androiddebugkey'
+                      keyPassword 'android'
+                  }
+              }
+
               defaultConfig {
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '1.1'
               }
 
               compileOptions {
@@ -183,16 +192,121 @@ jobs:
               }
           }
           EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/IconView.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+          import android.view.View;
+
+          final class IconView extends View {
+              static final int WIFI = 0;
+              static final int SCREEN = 1;
+              static final int CLOCK = 2;
+              static final int GEAR = 3;
+
+              private final int type;
+              private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final RectF r = new RectF();
+
+              IconView(Context c, int type) {
+                  super(c);
+                  this.type = type;
+                  p.setStrokeCap(Paint.Cap.ROUND);
+                  p.setColor(0xFFFFFFFF);
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  float w = getWidth();
+                  float h = getHeight();
+                  float u = Math.min(w, h) / 24f;
+                  float cx = w / 2f;
+                  float cy = h / 2f;
+                  p.setStyle(Paint.Style.STROKE);
+                  p.setStrokeWidth(2f * u);
+
+                  switch (type) {
+                      case WIFI: {
+                          float by = cy + 7f * u;
+                          for (int i = 1; i <= 3; i++) {
+                              float rad = i * 5.2f * u;
+                              r.set(cx - rad, by - rad, cx + rad, by + rad);
+                              c.drawArc(r, -135f, 90f, false, p);
+                          }
+                          p.setStyle(Paint.Style.FILL);
+                          c.drawCircle(cx, by, 1.7f * u, p);
+                          break;
+                      }
+                      case SCREEN: {
+                          r.set(cx - 10f * u, cy - 8f * u, cx + 10f * u, cy + 4f * u);
+                          c.drawRoundRect(r, 2.5f * u, 2.5f * u, p);
+                          c.drawLine(cx, cy + 4f * u, cx, cy + 8f * u, p);
+                          c.drawLine(cx - 4.5f * u, cy + 8f * u, cx + 4.5f * u, cy + 8f * u, p);
+                          break;
+                      }
+                      case CLOCK: {
+                          c.drawCircle(cx, cy, 9f * u, p);
+                          c.drawLine(cx, cy, cx, cy - 5.5f * u, p);
+                          c.drawLine(cx, cy, cx + 4f * u, cy + 2.5f * u, p);
+                          break;
+                      }
+                      default: {
+                          c.drawCircle(cx, cy, 6f * u, p);
+                          p.setStrokeWidth(2.6f * u);
+                          for (int i = 0; i < 8; i++) {
+                              double a = Math.toRadians(i * 45.0);
+                              float dx = (float) Math.cos(a);
+                              float dy = (float) Math.sin(a);
+                              c.drawLine(cx + dx * 8f * u, cy + dy * 8f * u,
+                                      cx + dx * 10.5f * u, cy + dy * 10.5f * u, p);
+                          }
+                          p.setStrokeWidth(2f * u);
+                          c.drawCircle(cx, cy, 2.2f * u, p);
+                          break;
+                      }
+                  }
+              }
+          }
+          EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/PanelService.java <<'EOF_FILE'
           package com.painel.lateral;
 
           import android.accessibilityservice.AccessibilityService;
+          import android.content.Context;
           import android.content.Intent;
+          import android.media.AudioManager;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
           import android.view.KeyEvent;
           import android.view.accessibility.AccessibilityEvent;
 
           public class PanelService extends AccessibilityService {
               static PanelService instance;
+
+              private static final long REPEAT_DELAY_MS = 350;
+              private static final long REPEAT_EVERY_MS = 110;
+              private static final long REPEAT_MAX_MS = 8000;
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private int volDir = 0;
+              private long volStart = 0;
+
+              private final Runnable volRepeat = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (volDir == 0) return;
+                      if (SystemClock.uptimeMillis() - volStart > REPEAT_MAX_MS) {
+                          volDir = 0;
+                          return;
+                      }
+                      adjustVolume(volDir);
+                      handler.postDelayed(this, REPEAT_EVERY_MS);
+                  }
+              };
 
               @Override
               protected void onServiceConnected() {
@@ -203,6 +317,8 @@ jobs:
               @Override
               public boolean onUnbind(Intent intent) {
                   instance = null;
+                  volDir = 0;
+                  handler.removeCallbacks(volRepeat);
                   return super.onUnbind(intent);
               }
 
@@ -212,8 +328,42 @@ jobs:
               @Override
               public void onInterrupt() { }
 
+              private void adjustVolume(int direction) {
+                  AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  if (am != null) {
+                      am.adjustSuggestedStreamVolume(direction, AudioManager.USE_DEFAULT_STREAM_TYPE,
+                              AudioManager.FLAG_SHOW_UI);
+                  }
+              }
+
+              // O filtro de botoes do Android perde a repeticao ao segurar o volume.
+              // Aqui o volume e tratado com repeticao propria, como o sistema faria.
+              private boolean handleVolume(KeyEvent event) {
+                  int code = event.getKeyCode();
+                  if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) {
+                      return false;
+                  }
+                  int dir = code == KeyEvent.KEYCODE_VOLUME_UP
+                          ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER;
+                  if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                      if (event.getRepeatCount() == 0) {
+                          handler.removeCallbacks(volRepeat);
+                          volDir = dir;
+                          volStart = SystemClock.uptimeMillis();
+                          adjustVolume(dir);
+                          handler.postDelayed(volRepeat, REPEAT_DELAY_MS);
+                      }
+                  } else {
+                      volDir = 0;
+                      handler.removeCallbacks(volRepeat);
+                  }
+                  return true;
+              }
+
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
+                  if (handleVolume(event)) return true;
+
                   // Todos os outros botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
                   if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
@@ -235,32 +385,28 @@ jobs:
           cat > painel/app/src/main/java/com/painel/lateral/PanelActivity.java <<'EOF_FILE'
           package com.painel.lateral;
 
-          import android.accessibilityservice.AccessibilityService;
           import android.app.Activity;
           import android.content.Context;
           import android.content.Intent;
-          import android.media.tv.TvContract;
-          import android.media.tv.TvInputInfo;
-          import android.media.tv.TvInputManager;
-          import android.net.Uri;
+          import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
-          import android.os.Handler;
-          import android.os.Looper;
           import android.provider.Settings;
           import android.util.TypedValue;
           import android.view.Gravity;
           import android.view.View;
           import android.view.ViewGroup;
+          import android.view.WindowManager;
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
-          import android.widget.ScrollView;
           import android.widget.TextView;
           import android.widget.Toast;
 
           public class PanelActivity extends Activity {
               static PanelActivity current;
 
-              private LinearLayout list;
+              private static final int ACCENT = 0xFF3D7BFF;
+
+              private LinearLayout panel;
               private View first;
 
               private int dp(int v) {
@@ -273,21 +419,45 @@ jobs:
                   super.onCreate(savedInstanceState);
                   current = this;
 
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                  getWindow().setDimAmount(0.35f);
+
                   FrameLayout root = new FrameLayout(this);
                   root.setOnClickListener(v -> finish());
 
-                  ScrollView scroll = new ScrollView(this);
-                  scroll.setBackgroundColor(0xF0101216);
-                  root.addView(scroll, new FrameLayout.LayoutParams(
-                          dp(360), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+                  panel = new LinearLayout(this);
+                  panel.setOrientation(LinearLayout.VERTICAL);
+                  panel.setPadding(dp(14), dp(14), dp(14), dp(14));
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xD9111419);
+                  bg.setCornerRadius(dp(28));
+                  bg.setStroke(dp(1), 0x33FFFFFF);
+                  panel.setBackground(bg);
 
-                  list = new LinearLayout(this);
-                  list.setOrientation(LinearLayout.VERTICAL);
-                  list.setPadding(dp(20), dp(24), dp(20), dp(24));
-                  scroll.addView(list);
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                          dp(300), ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.END | Gravity.CENTER_VERTICAL);
+                  lp.rightMargin = dp(28);
+                  root.addView(panel, lp);
 
-                  build();
+                  TextView caption = new TextView(this);
+                  caption.setText("ATALHOS");
+                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                  caption.setTextColor(0xFF8C95A5);
+                  caption.setLetterSpacing(0.15f);
+                  caption.setPadding(dp(14), dp(6), dp(14), dp(10));
+                  panel.addView(caption);
+
+                  row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
+                  row(IconView.SCREEN, "Tela e imagem",
+                          () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
+                  row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
+                  row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
+
+                  panel.setAlpha(0f);
+                  panel.setTranslationX(dp(40));
                   setContentView(root);
+                  panel.animate().alpha(1f).translationX(0f).setDuration(200).start();
                   if (first != null) first.requestFocus();
               }
 
@@ -297,66 +467,50 @@ jobs:
                   super.onDestroy();
               }
 
-              private void build() {
-                  header("Atalhos");
-                  item("Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
-                  item("Wi-Fi e rede", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
-                  item("Tela e imagem", () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
-                  item("Som", () -> open(new Intent(Settings.ACTION_SOUND_SETTINGS)));
-                  item("Bluetooth", () -> open(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)));
-                  item("Aplicativos", () -> open(new Intent(Settings.ACTION_APPLICATION_SETTINGS)));
-                  addInputs();
-                  header("Sistema");
-                  item("Apps recentes", () -> global(AccessibilityService.GLOBAL_ACTION_RECENTS));
-                  item("Menu de energia", () -> global(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG));
-                  item("Fechar", this::finish);
+              private GradientDrawable rowBg(boolean focused) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(focused ? ACCENT : 0x14FFFFFF);
+                  d.setCornerRadius(dp(16));
+                  return d;
               }
 
-              private void addInputs() {
-                  try {
-                      TvInputManager tm = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
-                      if (tm == null) return;
-                      boolean any = false;
-                      for (TvInputInfo info : tm.getTvInputList()) {
-                          if (!info.isPassthroughInput()) continue;
-                          CharSequence label = info.loadCustomLabel(this);
-                          if (label == null || label.length() == 0) label = info.loadLabel(this);
-                          final Uri uri = TvContract.buildChannelUriForPassthroughInput(info.getId());
-                          if (!any) {
-                              header("Entradas");
-                              any = true;
-                          }
-                          item(String.valueOf(label), () -> open(new Intent(Intent.ACTION_VIEW, uri)));
-                      }
-                  } catch (Exception e) {
-                      // sem entradas disponiveis
-                  }
-              }
+              private void row(int icon, String label, Runnable action) {
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setGravity(Gravity.CENTER_VERTICAL);
+                  row.setPadding(dp(16), dp(14), dp(16), dp(14));
+                  row.setBackground(rowBg(false));
 
-              private void header(String text) {
-                  TextView t = new TextView(this);
-                  t.setText(text);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                  t.setTextColor(0xFF9AA0AA);
-                  t.setPadding(dp(16), dp(16), dp(16), dp(6));
-                  list.addView(t);
-              }
+                  row.addView(new IconView(this, icon), new LinearLayout.LayoutParams(dp(26), dp(26)));
 
-              private void item(String label, Runnable action) {
                   TextView t = new TextView(this);
                   t.setText(label);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
                   t.setTextColor(0xFFFFFFFF);
-                  t.setPadding(dp(16), dp(14), dp(16), dp(14));
-                  t.setFocusable(true);
-                  t.setOnClickListener(v -> action.run());
-                  t.setOnFocusChangeListener((v, hasFocus) ->
-                          v.setBackgroundColor(hasFocus ? 0xFF2F6BFF : 0x00000000));
+                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  tp.leftMargin = dp(16);
+                  row.addView(t, tp);
+
+                  row.setFocusable(true);
+                  row.setOnClickListener(v -> action.run());
+                  row.setOnFocusChangeListener((v, hasFocus) -> {
+                      v.setBackground(rowBg(hasFocus));
+                      float s = hasFocus ? 1.04f : 1f;
+                      v.animate().scaleX(s).scaleY(s).setDuration(120).start();
+                  });
+
                   LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  p.bottomMargin = dp(4);
-                  list.addView(t, p);
-                  if (first == null) first = t;
+                  p.bottomMargin = dp(6);
+                  panel.addView(row, p);
+                  if (first == null) first = row;
+              }
+
+              private void startScreensaver() {
+                  Intent i = new Intent();
+                  i.setClassName("com.android.systemui", "com.android.systemui.Somnambulator");
+                  open(i);
               }
 
               private void open(Intent i) {
@@ -367,16 +521,6 @@ jobs:
                   } catch (Exception e) {
                       Toast.makeText(this, "Não disponível nesta TV", Toast.LENGTH_SHORT).show();
                   }
-              }
-
-              private void global(int action) {
-                  final PanelService s = PanelService.instance;
-                  if (s == null) {
-                      Toast.makeText(this, "Serviço não está ativo", Toast.LENGTH_SHORT).show();
-                      return;
-                  }
-                  finish();
-                  new Handler(Looper.getMainLooper()).postDelayed(() -> s.performGlobalAction(action), 250);
               }
           }
           EOF_FILE
@@ -516,6 +660,55 @@ jobs:
               }
           }
           EOF_FILE
+          base64 -d > painel/app/debug.keystore <<'EOF_KEY'
+          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
+          EOF_KEY
       - name: Compilar
         run: gradle -p painel assembleDebug --console=plain
       - uses: actions/upload-artifact@v4
