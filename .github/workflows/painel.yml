@@ -1,0 +1,524 @@
+name: Build Painel Lateral
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Criar projeto
+        run: |
+          mkdir -p painel/app/src/main/java/com/painel/lateral painel/app/src/main/res/xml painel/app/src/main/res/values
+          cat > painel/settings.gradle <<'EOF_FILE'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'painel'
+          include ':app'
+          EOF_FILE
+          cat > painel/build.gradle <<'EOF_FILE'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_FILE
+          cat > painel/gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2g
+          android.nonTransitiveRClass=true
+          EOF_FILE
+          cat > painel/app/build.gradle <<'EOF_FILE'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.painel.lateral'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.painel.lateral'
+                  minSdk 26
+                  targetSdk 29
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+
+              <application
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <activity
+                      android:name=".PanelActivity"
+                      android:exported="false"
+                      android:excludeFromRecents="true"
+                      android:launchMode="singleTask"
+                      android:taskAffinity=""
+                      android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+                  <service
+                      android:name=".PanelService"
+                      android:exported="true"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF_FILE
+          cat > painel/app/src/main/res/xml/accessibility_config.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagRequestFilterKeyEvents"
+              android:canRequestFilterKeyEvents="true"
+              android:notificationTimeout="100"
+              android:description="@string/service_description" />
+          EOF_FILE
+          cat > painel/app/src/main/res/values/strings.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Painel Lateral</string>
+              <string name="service_description">Abre o painel lateral quando o botão escolhido do controle é apertado.</string>
+          </resources>
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/Prefs.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+
+          import java.util.LinkedHashSet;
+          import java.util.Set;
+
+          final class Prefs {
+              static final int DEFAULT_KEY = 176;
+
+              private Prefs() { }
+
+              static Set<Integer> keys(Context c) {
+                  String s = c.getSharedPreferences("painel", Context.MODE_PRIVATE)
+                          .getString("keys", String.valueOf(DEFAULT_KEY));
+                  Set<Integer> r = new LinkedHashSet<>();
+                  for (String p : s.split(",")) {
+                      try {
+                          r.add(Integer.parseInt(p.trim()));
+                      } catch (NumberFormatException e) {
+                          // ignora valor invalido
+                      }
+                  }
+                  return r;
+              }
+
+              static void save(Context c, Set<Integer> keys) {
+                  StringBuilder sb = new StringBuilder();
+                  for (int k : keys) {
+                      if (sb.length() > 0) sb.append(',');
+                      sb.append(k);
+                  }
+                  c.getSharedPreferences("painel", Context.MODE_PRIVATE)
+                          .edit().putString("keys", sb.toString()).apply();
+              }
+
+              // Botoes que nunca podem ser capturados: navegacao, voltar, home, volume, power.
+              static boolean allowed(int code) {
+                  switch (code) {
+                      case 3:
+                      case 4:
+                      case 19:
+                      case 20:
+                      case 21:
+                      case 22:
+                      case 23:
+                      case 24:
+                      case 25:
+                      case 26:
+                      case 66:
+                      case 164:
+                          return false;
+                      default:
+                          return code > 0;
+                  }
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/PanelService.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Intent;
+          import android.view.KeyEvent;
+          import android.view.accessibility.AccessibilityEvent;
+
+          public class PanelService extends AccessibilityService {
+              static PanelService instance;
+
+              @Override
+              protected void onServiceConnected() {
+                  super.onServiceConnected();
+                  instance = this;
+              }
+
+              @Override
+              public boolean onUnbind(Intent intent) {
+                  instance = null;
+                  return super.onUnbind(intent);
+              }
+
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) { }
+
+              @Override
+              public void onInterrupt() { }
+
+              @Override
+              protected boolean onKeyEvent(KeyEvent event) {
+                  // Todos os outros botoes seguem normalmente para o sistema.
+                  if (MainActivity.visible) return false;
+                  if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
+
+                  if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                      PanelActivity open = PanelActivity.current;
+                      if (open != null) {
+                          open.finish();
+                      } else {
+                          Intent i = new Intent(this, PanelActivity.class);
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+                          startActivity(i);
+                      }
+                  }
+                  return true;
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/PanelActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.media.tv.TvContract;
+          import android.media.tv.TvInputInfo;
+          import android.media.tv.TvInputManager;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          public class PanelActivity extends Activity {
+              static PanelActivity current;
+
+              private LinearLayout list;
+              private View first;
+
+              private int dp(int v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics());
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  current = this;
+
+                  FrameLayout root = new FrameLayout(this);
+                  root.setOnClickListener(v -> finish());
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setBackgroundColor(0xF0101216);
+                  root.addView(scroll, new FrameLayout.LayoutParams(
+                          dp(360), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+
+                  list = new LinearLayout(this);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  list.setPadding(dp(20), dp(24), dp(20), dp(24));
+                  scroll.addView(list);
+
+                  build();
+                  setContentView(root);
+                  if (first != null) first.requestFocus();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (current == this) current = null;
+                  super.onDestroy();
+              }
+
+              private void build() {
+                  header("Atalhos");
+                  item("Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
+                  item("Wi-Fi e rede", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
+                  item("Tela e imagem", () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
+                  item("Som", () -> open(new Intent(Settings.ACTION_SOUND_SETTINGS)));
+                  item("Bluetooth", () -> open(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)));
+                  item("Aplicativos", () -> open(new Intent(Settings.ACTION_APPLICATION_SETTINGS)));
+                  addInputs();
+                  header("Sistema");
+                  item("Apps recentes", () -> global(AccessibilityService.GLOBAL_ACTION_RECENTS));
+                  item("Menu de energia", () -> global(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG));
+                  item("Fechar", this::finish);
+              }
+
+              private void addInputs() {
+                  try {
+                      TvInputManager tm = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
+                      if (tm == null) return;
+                      boolean any = false;
+                      for (TvInputInfo info : tm.getTvInputList()) {
+                          if (!info.isPassthroughInput()) continue;
+                          CharSequence label = info.loadCustomLabel(this);
+                          if (label == null || label.length() == 0) label = info.loadLabel(this);
+                          final Uri uri = TvContract.buildChannelUriForPassthroughInput(info.getId());
+                          if (!any) {
+                              header("Entradas");
+                              any = true;
+                          }
+                          item(String.valueOf(label), () -> open(new Intent(Intent.ACTION_VIEW, uri)));
+                      }
+                  } catch (Exception e) {
+                      // sem entradas disponiveis
+                  }
+              }
+
+              private void header(String text) {
+                  TextView t = new TextView(this);
+                  t.setText(text);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  t.setTextColor(0xFF9AA0AA);
+                  t.setPadding(dp(16), dp(16), dp(16), dp(6));
+                  list.addView(t);
+              }
+
+              private void item(String label, Runnable action) {
+                  TextView t = new TextView(this);
+                  t.setText(label);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                  t.setTextColor(0xFFFFFFFF);
+                  t.setPadding(dp(16), dp(14), dp(16), dp(14));
+                  t.setFocusable(true);
+                  t.setOnClickListener(v -> action.run());
+                  t.setOnFocusChangeListener((v, hasFocus) ->
+                          v.setBackgroundColor(hasFocus ? 0xFF2F6BFF : 0x00000000));
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  p.bottomMargin = dp(4);
+                  list.addView(t, p);
+                  if (first == null) first = t;
+              }
+
+              private void open(Intent i) {
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  try {
+                      startActivity(i);
+                      finish();
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Não disponível nesta TV", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              private void global(int action) {
+                  final PanelService s = PanelService.instance;
+                  if (s == null) {
+                      Toast.makeText(this, "Serviço não está ativo", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  finish();
+                  new Handler(Looper.getMainLooper()).postDelayed(() -> s.performGlobalAction(action), 250);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/MainActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.util.TypedValue;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+
+          import java.util.LinkedHashSet;
+          import java.util.Set;
+
+          public class MainActivity extends Activity {
+              static boolean visible;
+
+              private TextView status;
+              private TextView keysView;
+              private TextView lastView;
+              private int lastKey = -1;
+
+              private int dp(int v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics());
+              }
+
+              private TextView text(ViewGroup parent, String s, int sp) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setTextColor(0xFFFFFFFF);
+                  t.setPadding(0, dp(8), 0, dp(8));
+                  parent.addView(t);
+                  return t;
+              }
+
+              private void button(ViewGroup parent, String s, View.OnClickListener l) {
+                  Button b = new Button(this);
+                  b.setText(s);
+                  b.setOnClickListener(l);
+                  parent.addView(b);
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(dp(48), dp(32), dp(48), dp(32));
+                  root.setBackgroundColor(0xFF101216);
+                  ScrollView sv = new ScrollView(this);
+                  sv.setBackgroundColor(0xFF101216);
+                  sv.addView(root);
+
+                  text(root, "Painel Lateral", 28);
+                  status = text(root, "", 18);
+                  keysView = text(root, "", 18);
+                  lastView = text(root, "Aperte um botão do controle para detectá-lo "
+                          + "(setas, OK, Voltar, Home e volume são ignorados).", 18);
+
+                  button(root, "Usar o último botão detectado", v -> {
+                      if (lastKey > 0 && Prefs.allowed(lastKey)) {
+                          Set<Integer> k = new LinkedHashSet<>();
+                          k.add(lastKey);
+                          Prefs.save(this, k);
+                          refresh();
+                      }
+                  });
+                  button(root, "Voltar ao botão padrão (engrenagem)", v -> {
+                      Set<Integer> k = new LinkedHashSet<>();
+                      k.add(Prefs.DEFAULT_KEY);
+                      Prefs.save(this, k);
+                      refresh();
+                  });
+                  button(root, "Testar painel", v -> startActivity(new Intent(this, PanelActivity.class)));
+                  button(root, "Abrir configurações de acessibilidade", v -> {
+                      try {
+                          startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                      } catch (Exception e) {
+                          // tela indisponivel
+                      }
+                  });
+
+                  text(root, "Para ativar pelo ATV Tools, rode no Shell:", 16);
+                  text(root, "settings put secure enabled_accessibility_services "
+                          + "com.painel.lateral/com.painel.lateral.PanelService", 14);
+                  text(root, "settings put secure accessibility_enabled 1", 14);
+
+                  setContentView(sv);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  visible = true;
+                  refresh();
+              }
+
+              @Override
+              protected void onPause() {
+                  visible = false;
+                  super.onPause();
+              }
+
+              private void refresh() {
+                  String en = Settings.Secure.getString(getContentResolver(),
+                          Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                  boolean on = en != null && en.contains(getPackageName());
+                  status.setText("Serviço de acessibilidade: " + (on ? "ATIVO" : "desativado"));
+
+                  StringBuilder sb = new StringBuilder();
+                  for (int k : Prefs.keys(this)) {
+                      if (sb.length() > 0) sb.append(", ");
+                      sb.append(KeyEvent.keyCodeToString(k)).append(" (").append(k).append(")");
+                  }
+                  keysView.setText("Botão que abre o painel: " + sb);
+              }
+
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  if (Prefs.allowed(keyCode)) {
+                      lastKey = keyCode;
+                      lastView.setText("Último botão detectado: " + KeyEvent.keyCodeToString(keyCode)
+                              + " (código " + keyCode + ")");
+                      return true;
+                  }
+                  return super.onKeyDown(keyCode, event);
+              }
+          }
+          EOF_FILE
+      - name: Compilar
+        run: gradle -p painel assembleDebug --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: painel-lateral-apk
+          path: painel/app/build/outputs/apk/debug/app-debug.apk
