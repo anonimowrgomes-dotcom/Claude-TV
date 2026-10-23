@@ -591,6 +591,7 @@ jobs:
               private boolean open;
               private int upId = View.NO_ID;
               private Runnable onLaunched;
+              private Runnable onOpenChanged;
 
               AppsBar(Context c) {
                   super(c);
@@ -631,6 +632,11 @@ jobs:
                   upId = id;
               }
 
+              // Notifica a atividade para esconder/mostrar o painel lateral sem sobreposição.
+              void setOnOpenChanged(Runnable callback) {
+                  onOpenChanged = callback;
+              }
+
               void open(Runnable launched, Runnable onEmpty) {
                   onLaunched = launched;
                   if (entries != null) {
@@ -654,6 +660,7 @@ jobs:
               void close() {
                   if (!open) return;
                   open = false;
+                  if (onOpenChanged != null) onOpenChanged.run();
                   animate().alpha(0f).translationY(dp(36)).setDuration(180)
                           .setInterpolator(new DecelerateInterpolator())
                           .withEndAction(() -> {
@@ -667,6 +674,7 @@ jobs:
                       return;
                   }
                   open = true;
+                  if (onOpenChanged != null) onOpenChanged.run();
                   setVisibility(VISIBLE);
                   setAlpha(0f);
                   setTranslationY(dp(36));
