@@ -612,7 +612,7 @@ jobs:
 
               private GradientDrawable rowBg(boolean focused) {
                   GradientDrawable d = new GradientDrawable();
-                  d.setColor(focused ? 0xE6102034 : 0x180FFFFFF);
+                  d.setColor(focused ? 0xE6102034 : 0x18FFFFFF);
                   if (focused) d.setStroke(dp(1), 0xFF168BFF); else d.setStroke(dp(1), 0x182F4052);
                   d.setCornerRadius(dp(16));
                   return d;
