@@ -63,7 +63,7 @@ jobs:
                   minSdk 26
                   targetSdk 29
                   versionCode 3
-                  versionName '1.2'
+                  versionName '1.3'
               }
 
               compileOptions {
@@ -335,12 +335,16 @@ jobs:
                   float h = getHeight();
                   float rad = h / 2f;
                   p.setStyle(Paint.Style.FILL);
-                  p.setColor(0x40FFFFFF);
+                  p.setColor(0x302D3748);
                   r.set(0f, 0f, w, h);
                   c.drawRoundRect(r, rad, rad, p);
-                  p.setColor(0xFFFFFFFF);
-                  r.set(0f, 0f, Math.max(h, w * frac), h);
+                  p.setColor(0xFF168BFF);
+                  r.set(0f, 0f, Math.max(0f, w * frac), h);
                   c.drawRoundRect(r, rad, rad, p);
+                  p.setColor(0xFFEAF5FF);
+                  c.drawCircle(Math.max(rad, Math.min(w - rad, w * frac)), h / 2f, Math.max(2f, h * 0.72f), p);
+                  p.setColor(0xFF168BFF);
+                  c.drawCircle(Math.max(rad, Math.min(w - rad, w * frac)), h / 2f, Math.max(1f, h * 0.38f), p);
               }
           }
           EOF_FILE
@@ -551,13 +555,13 @@ jobs:
                   panel.setOrientation(LinearLayout.VERTICAL);
                   panel.setPadding(dp(14), dp(14), dp(14), dp(14));
                   GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xD9111419);
+                  bg.setColor(0xE6080A0E);
                   bg.setCornerRadius(dp(28));
-                  bg.setStroke(dp(1), 0x33FFFFFF);
+                  bg.setStroke(dp(1), 0x3D8B9BB3);
                   panel.setBackground(bg);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                          dp(300), ViewGroup.LayoutParams.WRAP_CONTENT,
+                          dp(420), ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.END | Gravity.CENTER_VERTICAL);
                   lp.rightMargin = dp(28);
                   root.addView(panel, lp);
@@ -569,7 +573,7 @@ jobs:
 
                   TextView caption = new TextView(this);
                   caption.setText("ramonzk!");
-                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
                   caption.setTextColor(0xFFFFFFFF);
                   caption.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                           android.graphics.Typeface.NORMAL));
@@ -580,7 +584,7 @@ jobs:
                   TextClock clock = new TextClock(this);
                   clock.setFormat24Hour("HH:mm");
                   clock.setFormat12Hour("HH:mm");
-                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
                   clock.setTextColor(0xFFB8C0CC);
                   header.addView(clock);
                   panel.addView(header);
@@ -608,7 +612,8 @@ jobs:
 
               private GradientDrawable rowBg(boolean focused) {
                   GradientDrawable d = new GradientDrawable();
-                  d.setColor(focused ? ACCENT : 0x14FFFFFF);
+                  d.setColor(focused ? 0xE6102034 : 0x180FFFFFF);
+                  if (focused) d.setStroke(dp(1), 0xFF168BFF); else d.setStroke(dp(1), 0x182F4052);
                   d.setCornerRadius(dp(16));
                   return d;
               }
@@ -625,7 +630,7 @@ jobs:
               private void addToPanel(View v) {
                   LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  p.bottomMargin = dp(6);
+                  p.bottomMargin = dp(8);
                   panel.addView(v, p);
                   if (first == null) first = v;
               }
@@ -633,7 +638,7 @@ jobs:
               private TextView label(String s) {
                   TextView t = new TextView(this);
                   t.setText(s);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
                   t.setTextColor(0xFFFFFFFF);
                   return t;
               }
@@ -642,7 +647,7 @@ jobs:
                   LinearLayout row = new LinearLayout(this);
                   row.setOrientation(LinearLayout.HORIZONTAL);
                   row.setGravity(Gravity.CENTER_VERTICAL);
-                  row.setPadding(dp(16), dp(14), dp(16), dp(14));
+                  row.setPadding(dp(18), dp(18), dp(18), dp(18));
 
                   row.addView(new IconView(this, icon), new LinearLayout.LayoutParams(dp(26), dp(26)));
                   LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
@@ -659,7 +664,7 @@ jobs:
               private void brightnessRow() {
                   LinearLayout box = new LinearLayout(this);
                   box.setOrientation(LinearLayout.VERTICAL);
-                  box.setPadding(dp(16), dp(14), dp(16), dp(16));
+                  box.setPadding(dp(18), dp(16), dp(18), dp(12));
 
                   LinearLayout top = new LinearLayout(this);
                   top.setOrientation(LinearLayout.HORIZONTAL);
@@ -680,7 +685,7 @@ jobs:
                   bar = new BarView(this);
                   LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
-                  bp.topMargin = dp(12);
+                  bp.topMargin = dp(10);
                   box.addView(bar, bp);
                   updateLevel();
 
