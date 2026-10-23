@@ -1022,6 +1022,9 @@ jobs:
           import android.widget.TextView;
 
           public class MainActivity extends Activity {
+              // Usado pelo PanelService: com o app aberto, o botao nao abre o painel.
+              static boolean visible;
+
               private static final int CYAN = 0xFF11A5FF;
               private static final int SOFT = 0xFF7FA8E0;
 
@@ -1225,8 +1228,15 @@ jobs:
               @Override
               protected void onResume() {
                   super.onResume();
+                  visible = true;
                   refresh();
                   testCard.requestFocus();
+              }
+
+              @Override
+              protected void onPause() {
+                  visible = false;
+                  super.onPause();
               }
 
               private void refresh() {
