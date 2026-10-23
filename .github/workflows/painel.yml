@@ -473,9 +473,16 @@ jobs:
 
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
-                  // Todos os outros botoes seguem normalmente para o sistema.
+                  // Nunca consumir volume: a TV/sistema precisa receber todos os eventos
+                  // repetidos durante o pressionamento longo do controle remoto.
+                  int code = event.getKeyCode();
+                  if (code == KeyEvent.KEYCODE_VOLUME_UP
+                          || code == KeyEvent.KEYCODE_VOLUME_DOWN
+                          || code == KeyEvent.KEYCODE_VOLUME_MUTE) return false;
+
+                  // Os demais botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
-                  if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
+                  if (!Prefs.keys(this).contains(code)) return false;
 
                   if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                       PanelActivity open = PanelActivity.current;
@@ -508,6 +515,7 @@ jobs:
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
           import android.widget.TextView;
+          import android.widget.TextClock;
           import android.widget.Toast;
 
           public class PanelActivity extends Activity {
@@ -554,19 +562,35 @@ jobs:
                   lp.rightMargin = dp(28);
                   root.addView(panel, lp);
 
-                  TextView caption = new TextView(this);
-                  caption.setText("ATALHOS");
-                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                  caption.setTextColor(0xFF8C95A5);
-                  caption.setLetterSpacing(0.15f);
-                  caption.setPadding(dp(14), dp(6), dp(14), dp(10));
-                  panel.addView(caption);
+                  LinearLayout header = new LinearLayout(this);
+                  header.setOrientation(LinearLayout.HORIZONTAL);
+                  header.setGravity(Gravity.CENTER_VERTICAL);
+                  header.setPadding(dp(14), dp(6), dp(14), dp(10));
 
-                  row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
+                  TextView caption = new TextView(this);
+                  caption.setText("ramonzk!");
+                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  caption.setTextColor(0xFFFFFFFF);
+                  caption.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                          android.graphics.Typeface.NORMAL));
+                  caption.setLetterSpacing(0.04f);
+                  header.addView(caption, new LinearLayout.LayoutParams(
+                          0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                  TextClock clock = new TextClock(this);
+                  clock.setFormat24Hour("HH:mm");
+                  clock.setFormat12Hour("HH:mm");
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  clock.setTextColor(0xFFB8C0CC);
+                  header.addView(clock);
+                  panel.addView(header);
+
+                  // Ordem solicitada: Brilho, Tela e imagem, Protetor de tela, Wi-Fi, Configurações.
+                  brightnessRow();
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
-                  brightnessRow();
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
+                  row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
                   row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
 
                   panel.setAlpha(0f);
