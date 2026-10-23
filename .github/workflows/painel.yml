@@ -530,6 +530,7 @@ jobs:
           cat > painel/app/src/main/java/com/painel/lateral/AppsBar.java <<'EOF_FILE'
           package com.painel.lateral;
 
+          import android.app.AlertDialog;
           import android.content.ComponentName;
           import android.content.Context;
           import android.content.Intent;
@@ -559,6 +560,8 @@ jobs:
 
           import java.util.ArrayList;
           import java.util.Collections;
+          import java.util.HashSet;
+          import java.util.Set;
           import java.util.LinkedHashMap;
           import java.util.List;
           import java.util.Map;
@@ -566,10 +569,16 @@ jobs:
           // Barra de aplicativos (parte de baixo da tela): icones em circulo, fundo transparente.
           final class AppsBar extends FrameLayout {
               private static final int RING = 0xFF4DA3FF;
+              private static final String PREFS = "apps_bar";
+              private static final String ORDER = "order";
+              private static final String HIDDEN = "hidden";
+              private boolean moving = false;
+              private int selectedIndex = -1;
 
               private static final class Entry {
                   String label;
                   String category;
+                  String pkg;
                   ComponentName name;
                   Drawable icon;
               }
@@ -690,6 +699,7 @@ jobs:
                           Entry e = new Entry();
                           e.label = String.valueOf(ri.loadLabel(pm));
                           e.category = cat;
+                          e.pkg = pkg;
                           e.name = new ComponentName(pkg, ri.activityInfo.name);
                           e.icon = ri.loadIcon(pm);
                           map.put(pkg, e);
@@ -697,6 +707,21 @@ jobs:
                   }
                   List<Entry> list = new ArrayList<>(map.values());
                   Collections.sort(list, (a, b) -> a.label.compareToIgnoreCase(b.label));
+                  Set<String> hidden = new HashSet<>(c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                          .getStringSet(HIDDEN, new HashSet<>()));
+                  list.removeIf(e -> hidden.contains(e.pkg));
+                  String saved = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(ORDER, "");
+                  if (!saved.isEmpty()) {
+                      Map<String, Integer> ranks = new LinkedHashMap<>();
+                      String[] parts = saved.split("\\|");
+                      for (int j = 0; j < parts.length; j++) ranks.put(parts[j], j);
+                      Collections.sort(list, (x, y) -> {
+                          int rx = ranks.containsKey(x.pkg) ? ranks.get(x.pkg) : Integer.MAX_VALUE;
+                          int ry = ranks.containsKey(y.pkg) ? ranks.get(y.pkg) : Integer.MAX_VALUE;
+                          if (rx != ry) return Integer.compare(rx, ry);
+                          return x.label.compareToIgnoreCase(y.label);
+                      });
+                  }
                   return list;
               }
 
@@ -732,9 +757,11 @@ jobs:
                   circle.setClipToOutline(true);
                   if (e.icon instanceof AdaptiveIconDrawable) {
                       circle.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                      circle.setPadding(dp(1), dp(1), dp(1), dp(1));
                   } else {
+                      // Os ícones comuns recebem menos margem; a máscara circular mantém o desenho limpo.
                       circle.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                      int p = dp(11);
+                      int p = dp(7);
                       circle.setPadding(p, p, p, p);
                   }
                   circle.setImageDrawable(e.icon);
@@ -790,7 +817,77 @@ jobs:
                   });
 
                   // Animacao ao clicar: encolhe, depois "estoura" e abre o app.
+                  b.setOnKeyListener((v, keyCode, ev) -> {
+                      int at = entries.indexOf(e);
+                      if (ev.getAction() == KeyEvent.ACTION_DOWN) {
+                          if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount() >= 2 && !moving) {
+                              moving = true;
+                              selectedIndex = at;
+                              b.animate().translationY(-dp(12)).scaleX(1.06f).scaleY(1.06f).setDuration(180).start();
+                              circle.setForeground(ring);
+                              label.setAlpha(1f);
+                              Toast.makeText(getContext(), "Mover: use ◀ ▶; OK de novo para opções", Toast.LENGTH_LONG).show();
+                              return true;
+                          }
+                          if (moving && selectedIndex >= 0) {
+                              if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                                  int target = at + (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1);
+                                  if (target >= 0 && target < entries.size()) {
+                                      Entry item = entries.remove(at);
+                                      entries.add(target, item);
+                                      selectedIndex = target;
+                                      saveOrder();
+                                      build();
+                                      row.getChildAt(target).requestFocus();
+                                      row.getChildAt(target).animate().translationY(-dp(12)).setDuration(160).start();
+                                  }
+                                  return true;
+                              }
+                              if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount() == 0) {
+                                  Entry chosen = entries.get(at);
+                                  new AlertDialog.Builder(getContext()).setTitle(chosen.label)
+                                      .setItems(new String[]{"Ocultar aplicativo", "Continuar movendo", "Concluir"},
+                                        (dialog, which) -> {
+                                          if (which == 0) {
+                                            Set<String> hidden = new HashSet<>(getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).getStringSet("hidden", new HashSet<>()));
+                                            hidden.add(chosen.pkg);
+                                            getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).edit().putStringSet("hidden", hidden).apply();
+                                            entries.remove(chosen);
+                                            moving = false; selectedIndex = -1; saveOrder(); build();
+                                            if (row.getChildCount() > 0) row.getChildAt(0).requestFocus(); else close();
+                                          } else if (which == 2) {
+                                            moving = false; selectedIndex = -1; saveOrder(); build();
+                                            if (row.getChildCount() > 0) row.getChildAt(Math.min(at, row.getChildCount()-1)).requestFocus();
+                                            Toast.makeText(getContext(), "Ordem salva", Toast.LENGTH_SHORT).show();
+                                          }
+                                        }).show();
+                                  return true;
+                              }
+                              if (keyCode == KeyEvent.KEYCODE_BACK) { moving = false; selectedIndex = -1; saveOrder(); build(); return true; }
+                          }
+                      }
+                      return false;
+                  });
                   b.setOnClickListener(v -> {
+                      if (moving) {
+                          int at = entries.indexOf(e);
+                          if (at == selectedIndex) {
+                              new AlertDialog.Builder(getContext()).setTitle(e.label)
+                                  .setItems(new String[]{"Ocultar aplicativo", "Concluir"},
+                                    (dialog, which) -> {
+                                      if (which == 0) {
+                                        Set<String> hidden = new HashSet<>(getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).getStringSet("hidden", new HashSet<>()));
+                                        hidden.add(e.pkg);
+                                        getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).edit().putStringSet("hidden", hidden).apply();
+                                        entries.remove(e); moving = false; selectedIndex = -1; saveOrder(); build();
+                                        if (row.getChildCount() > 0) row.getChildAt(0).requestFocus(); else close();
+                                      } else { moving = false; selectedIndex = -1; saveOrder(); build(); }
+                                    }).show();
+                          } else {
+                              moving = false; selectedIndex = -1; saveOrder(); build();
+                          }
+                          return;
+                      }
                       b.setClickable(false);
                       circle.animate().scaleX(0.82f).scaleY(0.82f).setDuration(90)
                               .setInterpolator(new DecelerateInterpolator())
@@ -800,6 +897,16 @@ jobs:
                               .start();
                   });
                   return b;
+              }
+
+              private void saveOrder() {
+                  StringBuilder out = new StringBuilder();
+                  for (Entry item : entries) {
+                      if (out.length() > 0) out.append('|');
+                      out.append(item.pkg);
+                  }
+                  getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE)
+                          .edit().putString("order", out.toString()).apply();
               }
 
               private void launch(Entry e, View b, ImageView circle) {
@@ -929,6 +1036,10 @@ jobs:
                   appsRow = row(IconView.APPS, "Aplicativos", this::toggleApps);
                   appsRow.setId(View.generateViewId());
                   appsBar.setUpTarget(appsRow.getId());
+                  appsBar.setOnOpenChanged(() -> {
+                      if (appsBar.isOpen()) panel.setVisibility(View.GONE);
+                      else panel.setVisibility(View.VISIBLE);
+                  });
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
@@ -947,7 +1058,7 @@ jobs:
                       closeApps();
                       return;
                   }
-                  appsBar.open(this::finish, () -> Toast.makeText(this,
+                  appsBar.open(() -> { appsBar.close(); panel.setVisibility(View.VISIBLE); }, () -> Toast.makeText(this,
                           "Nenhum aplicativo encontrado", Toast.LENGTH_SHORT).show());
               }
 
