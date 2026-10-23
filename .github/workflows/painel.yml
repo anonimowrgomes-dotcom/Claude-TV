@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 2
-                  versionName '1.1'
+                  versionCode 3
+                  versionName '1.2'
               }
 
               compileOptions {
@@ -100,6 +100,17 @@ jobs:
                       android:launchMode="singleTask"
                       android:taskAffinity=""
                       android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+                  <service
+                      android:name=".ClockDream"
+                      android:exported="true"
+                      android:label="Relógio preto"
+                      android:permission="android.permission.BIND_DREAM_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.service.dreams.DreamService" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </service>
 
                   <service
                       android:name=".PanelService"
@@ -170,6 +181,18 @@ jobs:
                           .edit().putString("keys", sb.toString()).apply();
               }
 
+              static final int MIN_BRIGHTNESS = 20;
+
+              static int brightness(Context c) {
+                  int v = c.getSharedPreferences("painel", Context.MODE_PRIVATE).getInt("brightness", 100);
+                  return Math.max(MIN_BRIGHTNESS, Math.min(100, v));
+              }
+
+              static void saveBrightness(Context c, int level) {
+                  c.getSharedPreferences("painel", Context.MODE_PRIVATE)
+                          .edit().putInt("brightness", level).apply();
+              }
+
               // Botoes que nunca podem ser capturados: navegacao, voltar, home, volume, power.
               static boolean allowed(int code) {
                   switch (code) {
@@ -206,6 +229,7 @@ jobs:
               static final int SCREEN = 1;
               static final int CLOCK = 2;
               static final int GEAR = 3;
+              static final int SUN = 4;
 
               private final int type;
               private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -253,6 +277,17 @@ jobs:
                           c.drawLine(cx, cy, cx + 4f * u, cy + 2.5f * u, p);
                           break;
                       }
+                      case SUN: {
+                          c.drawCircle(cx, cy, 4.2f * u, p);
+                          for (int i = 0; i < 8; i++) {
+                              double a = Math.toRadians(i * 45.0);
+                              float dx = (float) Math.cos(a);
+                              float dy = (float) Math.sin(a);
+                              c.drawLine(cx + dx * 7.5f * u, cy + dy * 7.5f * u,
+                                      cx + dx * 10.5f * u, cy + dy * 10.5f * u, p);
+                          }
+                          break;
+                      }
                       default: {
                           c.drawCircle(cx, cy, 6f * u, p);
                           p.setStrokeWidth(2.6f * u);
@@ -271,55 +306,121 @@ jobs:
               }
           }
           EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/BarView.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+          import android.view.View;
+
+          final class BarView extends View {
+              private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final RectF r = new RectF();
+              private float frac = 1f;
+
+              BarView(Context c) {
+                  super(c);
+              }
+
+              void setFraction(float f) {
+                  frac = Math.max(0f, Math.min(1f, f));
+                  invalidate();
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  float w = getWidth();
+                  float h = getHeight();
+                  float rad = h / 2f;
+                  p.setStyle(Paint.Style.FILL);
+                  p.setColor(0x40FFFFFF);
+                  r.set(0f, 0f, w, h);
+                  c.drawRoundRect(r, rad, rad, p);
+                  p.setColor(0xFFFFFFFF);
+                  r.set(0f, 0f, Math.max(h, w * frac), h);
+                  c.drawRoundRect(r, rad, rad, p);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/ClockDream.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.service.dreams.DreamService;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.TextClock;
+
+          public class ClockDream extends DreamService {
+              @Override
+              public void onAttachedToWindow() {
+                  super.onAttachedToWindow();
+                  setInteractive(false);
+                  setFullscreen(true);
+
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(Color.BLACK);
+
+                  TextClock clock = new TextClock(this);
+                  clock.setFormat24Hour("HH:mm");
+                  clock.setFormat12Hour("HH:mm");
+                  clock.setTextColor(Color.WHITE);
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+
+                  float d = getResources().getDisplayMetrics().density;
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.TOP | Gravity.END);
+                  lp.topMargin = (int) (28 * d);
+                  lp.rightMargin = (int) (36 * d);
+                  root.addView(clock, lp);
+
+                  setContentView(root);
+              }
+          }
+          EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/PanelService.java <<'EOF_FILE'
           package com.painel.lateral;
 
           import android.accessibilityservice.AccessibilityService;
           import android.content.Context;
           import android.content.Intent;
-          import android.media.AudioManager;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.os.SystemClock;
+          import android.graphics.PixelFormat;
           import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.WindowManager;
           import android.view.accessibility.AccessibilityEvent;
 
           public class PanelService extends AccessibilityService {
               static PanelService instance;
 
-              private static final long REPEAT_DELAY_MS = 350;
-              private static final long REPEAT_EVERY_MS = 110;
-              private static final long REPEAT_MAX_MS = 8000;
-
-              private final Handler handler = new Handler(Looper.getMainLooper());
-              private int volDir = 0;
-              private long volStart = 0;
-
-              private final Runnable volRepeat = new Runnable() {
-                  @Override
-                  public void run() {
-                      if (volDir == 0) return;
-                      if (SystemClock.uptimeMillis() - volStart > REPEAT_MAX_MS) {
-                          volDir = 0;
-                          return;
-                      }
-                      adjustVolume(volDir);
-                      handler.postDelayed(this, REPEAT_EVERY_MS);
-                  }
-              };
+              private View dimView;
 
               @Override
               protected void onServiceConnected() {
                   super.onServiceConnected();
                   instance = this;
+                  applyBrightness(Prefs.brightness(this));
               }
 
               @Override
               public boolean onUnbind(Intent intent) {
                   instance = null;
-                  volDir = 0;
-                  handler.removeCallbacks(volRepeat);
+                  removeDim();
                   return super.onUnbind(intent);
+              }
+
+              @Override
+              public void onDestroy() {
+                  removeDim();
+                  super.onDestroy();
               }
 
               @Override
@@ -328,42 +429,50 @@ jobs:
               @Override
               public void onInterrupt() { }
 
-              private void adjustVolume(int direction) {
-                  AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                  if (am != null) {
-                      am.adjustSuggestedStreamVolume(direction, AudioManager.USE_DEFAULT_STREAM_TYPE,
-                              AudioManager.FLAG_SHOW_UI);
+              // "Brilho" por software: uma camada preta transparente sobre toda a tela.
+              // Nao mexe na luz de fundo real da TV (o Android nao permite isso a apps).
+              void applyBrightness(int level) {
+                  if (level >= 100) {
+                      removeDim();
+                      return;
+                  }
+                  float alpha = (100 - level) / 100f;
+                  try {
+                      if (dimView == null) {
+                          WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                          View v = new View(this);
+                          v.setBackgroundColor(0xFF000000);
+                          WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                                  WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                          | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                          | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                          | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                                  PixelFormat.TRANSLUCENT);
+                          wm.addView(v, lp);
+                          dimView = v;
+                      }
+                      dimView.setAlpha(alpha);
+                  } catch (Exception e) {
+                      dimView = null;
                   }
               }
 
-              // O filtro de botoes do Android perde a repeticao ao segurar o volume.
-              // Aqui o volume e tratado com repeticao propria, como o sistema faria.
-              private boolean handleVolume(KeyEvent event) {
-                  int code = event.getKeyCode();
-                  if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) {
-                      return false;
+              private void removeDim() {
+                  if (dimView == null) return;
+                  try {
+                      WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                      wm.removeView(dimView);
+                  } catch (Exception e) {
+                      // ja removida
                   }
-                  int dir = code == KeyEvent.KEYCODE_VOLUME_UP
-                          ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER;
-                  if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                      if (event.getRepeatCount() == 0) {
-                          handler.removeCallbacks(volRepeat);
-                          volDir = dir;
-                          volStart = SystemClock.uptimeMillis();
-                          adjustVolume(dir);
-                          handler.postDelayed(volRepeat, REPEAT_DELAY_MS);
-                      }
-                  } else {
-                      volDir = 0;
-                      handler.removeCallbacks(volRepeat);
-                  }
-                  return true;
+                  dimView = null;
               }
 
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
-                  if (handleVolume(event)) return true;
-
                   // Todos os outros botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
                   if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
@@ -386,13 +495,13 @@ jobs:
           package com.painel.lateral;
 
           import android.app.Activity;
-          import android.content.Context;
           import android.content.Intent;
           import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
           import android.provider.Settings;
           import android.util.TypedValue;
           import android.view.Gravity;
+          import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.view.WindowManager;
@@ -405,9 +514,13 @@ jobs:
               static PanelActivity current;
 
               private static final int ACCENT = 0xFF3D7BFF;
+              private static final int STEP = 5;
 
               private LinearLayout panel;
               private View first;
+              private int level;
+              private TextView levelText;
+              private BarView bar;
 
               private int dp(int v) {
                   return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
@@ -418,6 +531,7 @@ jobs:
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   current = this;
+                  level = Prefs.brightness(this);
 
                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
                   getWindow().setDimAmount(0.35f);
@@ -451,6 +565,7 @@ jobs:
                   row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
+                  brightnessRow();
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
                   row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
 
@@ -474,51 +589,137 @@ jobs:
                   return d;
               }
 
-              private void row(int icon, String label, Runnable action) {
+              private void focusStyle(View v) {
+                  v.setBackground(rowBg(false));
+                  v.setOnFocusChangeListener((view, hasFocus) -> {
+                      view.setBackground(rowBg(hasFocus));
+                      float s = hasFocus ? 1.04f : 1f;
+                      view.animate().scaleX(s).scaleY(s).setDuration(120).start();
+                  });
+              }
+
+              private void addToPanel(View v) {
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  p.bottomMargin = dp(6);
+                  panel.addView(v, p);
+                  if (first == null) first = v;
+              }
+
+              private TextView label(String s) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                  t.setTextColor(0xFFFFFFFF);
+                  return t;
+              }
+
+              private void row(int icon, String text, Runnable action) {
                   LinearLayout row = new LinearLayout(this);
                   row.setOrientation(LinearLayout.HORIZONTAL);
                   row.setGravity(Gravity.CENTER_VERTICAL);
                   row.setPadding(dp(16), dp(14), dp(16), dp(14));
-                  row.setBackground(rowBg(false));
 
                   row.addView(new IconView(this, icon), new LinearLayout.LayoutParams(dp(26), dp(26)));
-
-                  TextView t = new TextView(this);
-                  t.setText(label);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
-                  t.setTextColor(0xFFFFFFFF);
                   LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                   tp.leftMargin = dp(16);
-                  row.addView(t, tp);
+                  row.addView(label(text), tp);
 
                   row.setFocusable(true);
                   row.setOnClickListener(v -> action.run());
-                  row.setOnFocusChangeListener((v, hasFocus) -> {
-                      v.setBackground(rowBg(hasFocus));
-                      float s = hasFocus ? 1.04f : 1f;
-                      v.animate().scaleX(s).scaleY(s).setDuration(120).start();
+                  focusStyle(row);
+                  addToPanel(row);
+              }
+
+              private void brightnessRow() {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(dp(16), dp(14), dp(16), dp(16));
+
+                  LinearLayout top = new LinearLayout(this);
+                  top.setOrientation(LinearLayout.HORIZONTAL);
+                  top.setGravity(Gravity.CENTER_VERTICAL);
+                  top.addView(new IconView(this, IconView.SUN), new LinearLayout.LayoutParams(dp(26), dp(26)));
+
+                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
+                          0, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  tp.leftMargin = dp(16);
+                  tp.weight = 1f;
+                  top.addView(label("Brilho"), tp);
+
+                  levelText = label("");
+                  levelText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                  top.addView(levelText);
+                  box.addView(top);
+
+                  bar = new BarView(this);
+                  LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
+                  bp.topMargin = dp(12);
+                  box.addView(bar, bp);
+                  updateLevel();
+
+                  box.setFocusable(true);
+                  box.setOnKeyListener((v, keyCode, event) -> {
+                      if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                          setLevel(level - STEP);
+                          return true;
+                      }
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                          setLevel(level + STEP);
+                          return true;
+                      }
+                      return false;
                   });
-
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  p.bottomMargin = dp(6);
-                  panel.addView(row, p);
-                  if (first == null) first = row;
+                  focusStyle(box);
+                  addToPanel(box);
               }
 
+              private void setLevel(int value) {
+                  int v = Math.max(Prefs.MIN_BRIGHTNESS, Math.min(100, value));
+                  if (v == level) return;
+                  PanelService s = PanelService.instance;
+                  if (s == null) {
+                      Toast.makeText(this, "Serviço não está ativo", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  level = v;
+                  Prefs.saveBrightness(this, level);
+                  s.applyBrightness(level);
+                  updateLevel();
+              }
+
+              private void updateLevel() {
+                  levelText.setText(level + "%");
+                  bar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float) (100 - Prefs.MIN_BRIGHTNESS));
+              }
+
+              // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
+              // O caminho que funciona e a acao SLEEP das Configuracoes da TV.
               private void startScreensaver() {
-                  Intent i = new Intent();
-                  i.setClassName("com.android.systemui", "com.android.systemui.Somnambulator");
-                  open(i);
+                  Intent i = new Intent("com.google.android.pano.action.SLEEP");
+                  i.setClassName("com.android.tv.settings",
+                          "com.android.tv.settings.device.display.daydream.DaydreamVoiceAction");
+                  if (tryStart(i)) return;
+                  if (tryStart(new Intent("com.google.android.pano.action.SLEEP"))) return;
+                  Toast.makeText(this, "Não disponível nesta TV", Toast.LENGTH_SHORT).show();
               }
 
-              private void open(Intent i) {
+              private boolean tryStart(Intent i) {
                   i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                   try {
                       startActivity(i);
                       finish();
+                      return true;
                   } catch (Exception e) {
+                      return false;
+                  }
+              }
+
+              private void open(Intent i) {
+                  if (!tryStart(i)) {
                       Toast.makeText(this, "Não disponível nesta TV", Toast.LENGTH_SHORT).show();
                   }
               }
