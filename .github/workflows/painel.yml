@@ -764,139 +764,484 @@ jobs:
               }
           }
           EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/AppUi.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.graphics.BlurMaskFilter;
+          import android.graphics.Canvas;
+          import android.graphics.LinearGradient;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.RadialGradient;
+          import android.graphics.Rect;
+          import android.graphics.RectF;
+          import android.graphics.Shader;
+          import android.graphics.drawable.GradientDrawable;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.LinearLayout;
+
+          // Elementos visuais usados SOMENTE na tela do app (MainActivity).
+          // O painel lateral (PanelActivity/PanelService) nao usa nada daqui.
+          final class AppUi {
+              private AppUi() { }
+
+              // Fundo preto azulado com brilho e ondas azuis no canto inferior.
+              static final class Bg extends View {
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final Path path = new Path();
+                  private Shader glowA;
+                  private Shader glowB;
+                  private Shader waveShader;
+
+                  Bg(Context c) {
+                      super(c);
+                  }
+
+                  @Override
+                  protected void onSizeChanged(int w, int h, int ow, int oh) {
+                      super.onSizeChanged(w, h, ow, oh);
+                      glowA = new RadialGradient(w * 0.9f, h * 1.05f, w * 0.65f,
+                              0x66146BFF, 0x00146BFF, Shader.TileMode.CLAMP);
+                      glowB = new RadialGradient(w * 0.05f, h * 0.95f, w * 0.35f,
+                              0x33104BD0, 0x00104BD0, Shader.TileMode.CLAMP);
+                      waveShader = new LinearGradient(0f, 0f, w, 0f,
+                              new int[]{0x00289BFF, 0x66289BFF, 0xAA3DA5FF},
+                              new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float w = getWidth();
+                      float h = getHeight();
+                      float d = getResources().getDisplayMetrics().density;
+                      c.drawColor(0xFF020611);
+
+                      p.setStyle(Paint.Style.FILL);
+                      p.setShader(glowA);
+                      c.drawRect(0f, 0f, w, h, p);
+                      p.setShader(glowB);
+                      c.drawRect(0f, 0f, w, h, p);
+
+                      p.setStyle(Paint.Style.STROKE);
+                      p.setShader(waveShader);
+                      for (int i = 0; i < 4; i++) {
+                          float y0 = h * (0.80f + 0.045f * i);
+                          p.setStrokeWidth((1.2f + 0.5f * i) * d);
+                          p.setAlpha(255 - i * 45);
+                          path.reset();
+                          path.moveTo(0f, y0);
+                          path.cubicTo(w * 0.28f, y0 - h * 0.10f, w * 0.55f, y0 + h * 0.10f,
+                                  w, y0 - h * (0.10f + 0.03f * i));
+                          c.drawPath(path, p);
+                      }
+                      p.setShader(null);
+                      p.setAlpha(255);
+                  }
+              }
+
+              // Icones desenhados em codigo (sem arquivos de imagem).
+              static final class Ic extends View {
+                  static final int GEAR = 0;
+                  static final int MONITOR = 1;
+                  static final int ACCESS = 2;
+                  static final int SERVICE = 3;
+                  static final int PIN = 4;
+                  static final int CHEVRON = 5;
+
+                  private final int type;
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final RectF r = new RectF();
+                  private final Path path = new Path();
+
+                  Ic(Context c, int type, int color) {
+                      super(c);
+                      this.type = type;
+                      p.setColor(color);
+                      p.setStrokeCap(Paint.Cap.ROUND);
+                      p.setStrokeJoin(Paint.Join.ROUND);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float w = getWidth();
+                      float h = getHeight();
+                      float u = Math.min(w, h) / 24f;
+                      float cx = w / 2f;
+                      float cy = h / 2f;
+                      p.setStyle(Paint.Style.STROKE);
+                      p.setStrokeWidth(2f * u);
+
+                      switch (type) {
+                          case GEAR: {
+                              c.drawCircle(cx, cy, 6f * u, p);
+                              p.setStrokeWidth(2.6f * u);
+                              for (int i = 0; i < 8; i++) {
+                                  double a = Math.toRadians(i * 45.0);
+                                  float dx = (float) Math.cos(a);
+                                  float dy = (float) Math.sin(a);
+                                  c.drawLine(cx + dx * 8f * u, cy + dy * 8f * u,
+                                          cx + dx * 10.5f * u, cy + dy * 10.5f * u, p);
+                              }
+                              p.setStrokeWidth(2f * u);
+                              c.drawCircle(cx, cy, 2.2f * u, p);
+                              break;
+                          }
+                          case MONITOR: {
+                              r.set(cx - 10f * u, cy - 8f * u, cx + 10f * u, cy + 4f * u);
+                              c.drawRoundRect(r, 2.5f * u, 2.5f * u, p);
+                              c.drawLine(cx, cy + 4f * u, cx, cy + 8f * u, p);
+                              c.drawLine(cx - 4.5f * u, cy + 8f * u, cx + 4.5f * u, cy + 8f * u, p);
+                              break;
+                          }
+                          case ACCESS: {
+                              p.setStyle(Paint.Style.FILL);
+                              c.drawCircle(cx, cy - 8f * u, 2.3f * u, p);
+                              p.setStyle(Paint.Style.STROKE);
+                              p.setStrokeWidth(2.4f * u);
+                              c.drawLine(cx - 8.5f * u, cy - 3.5f * u, cx + 8.5f * u, cy - 3.5f * u, p);
+                              c.drawLine(cx, cy - 3.5f * u, cx, cy + 2.5f * u, p);
+                              c.drawLine(cx, cy + 2.5f * u, cx - 4.5f * u, cy + 9.5f * u, p);
+                              c.drawLine(cx, cy + 2.5f * u, cx + 4.5f * u, cy + 9.5f * u, p);
+                              break;
+                          }
+                          case SERVICE: {
+                              c.drawCircle(cx, cy, 10f * u, p);
+                              p.setStyle(Paint.Style.FILL);
+                              r.set(cx - 4.5f * u, cy - 3f * u, cx + 4.5f * u, cy + 3f * u);
+                              c.drawRoundRect(r, 1.5f * u, 1.5f * u, p);
+                              break;
+                          }
+                          case PIN: {
+                              r.set(cx - 10f * u, cy - 9f * u, cx + 10f * u, cy + 3f * u);
+                              c.drawRoundRect(r, 2.5f * u, 2.5f * u, p);
+                              c.drawLine(cx, cy + 3f * u, cx, cy + 8f * u, p);
+                              c.drawLine(cx - 4.5f * u, cy + 8f * u, cx + 4.5f * u, cy + 8f * u, p);
+                              p.setStrokeWidth(1.6f * u);
+                              c.drawCircle(cx, cy - 4.8f * u, 2.2f * u, p);
+                              c.drawLine(cx, cy - 2.6f * u, cx, cy - 0.8f * u, p);
+                              break;
+                          }
+                          default: {
+                              p.setStrokeWidth(2.2f * u);
+                              path.reset();
+                              path.moveTo(cx - 3f * u, cy - 6f * u);
+                              path.lineTo(cx + 3f * u, cy);
+                              path.lineTo(cx - 3f * u, cy + 6f * u);
+                              c.drawPath(path, p);
+                              break;
+                          }
+                      }
+                  }
+              }
+
+              // Item clicavel com brilho azul quando recebe foco (setas do controle).
+              static final class Card extends LinearLayout {
+                  private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final GradientDrawable body = new GradientDrawable();
+                  private final RectF r = new RectF();
+                  private final float pad;
+                  private final float radius;
+                  private final float d;
+
+                  Card(Context c) {
+                      super(c);
+                      d = c.getResources().getDisplayMetrics().density;
+                      pad = 14f * d;
+                      radius = 18f * d;
+                      setOrientation(HORIZONTAL);
+                      setGravity(Gravity.CENTER_VERTICAL);
+                      setFocusable(true);
+                      setClickable(true);
+                      setWillNotDraw(false);
+                      setLayerType(LAYER_TYPE_SOFTWARE, null);
+                      setPadding((int) (pad + 18f * d), (int) pad, (int) (pad + 22f * d), (int) pad);
+                      glow.setStyle(Paint.Style.STROKE);
+                      glow.setStrokeWidth(3f * d);
+                      glow.setColor(0xFF1E90FF);
+                      glow.setMaskFilter(new BlurMaskFilter(12f * d, BlurMaskFilter.Blur.NORMAL));
+                      body.setOrientation(GradientDrawable.Orientation.LEFT_RIGHT);
+                  }
+
+                  // Altura total = altura do corpo + margem para o brilho.
+                  int totalHeight(int bodyDp) {
+                      return (int) (bodyDp * d + 2f * pad);
+                  }
+
+                  // Margem negativa para o corpo do card alinhar com o resto do conteudo.
+                  int bleed() {
+                      return (int) pad;
+                  }
+
+                  @Override
+                  protected void onFocusChanged(boolean gainFocus, int direction, Rect previouslyFocusedRect) {
+                      super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
+                      invalidate();
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      boolean f = isFocused();
+                      r.set(pad, pad, getWidth() - pad, getHeight() - pad);
+                      if (f) {
+                          c.drawRoundRect(r, radius, radius, glow);
+                      }
+                      body.setCornerRadius(radius);
+                      body.setColors(f ? new int[]{0xFF0B3C9E, 0xFF0A2262}
+                              : new int[]{0xFF0A1633, 0xFF070F25});
+                      body.setStroke((int) Math.max(1f, (f ? 2f : 1f) * d), f ? 0xFF2AA0FF : 0x40336EDD);
+                      body.setBounds((int) r.left, (int) r.top, (int) r.right, (int) r.bottom);
+                      body.draw(c);
+                      super.onDraw(c);
+                  }
+              }
+          }
+          EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/MainActivity.java <<'EOF_FILE'
           package com.painel.lateral;
 
           import android.app.Activity;
           import android.content.Intent;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
           import android.provider.Settings;
+          import android.text.SpannableStringBuilder;
+          import android.text.Spanned;
+          import android.text.style.ForegroundColorSpan;
+          import android.text.style.StyleSpan;
           import android.util.TypedValue;
+          import android.view.Gravity;
           import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
-          import android.widget.Button;
+          import android.widget.FrameLayout;
           import android.widget.LinearLayout;
-          import android.widget.ScrollView;
+          import android.widget.TextClock;
           import android.widget.TextView;
 
-          import java.util.LinkedHashSet;
-          import java.util.Set;
-
           public class MainActivity extends Activity {
-              static boolean visible;
+              private static final int CYAN = 0xFF11A5FF;
+              private static final int SOFT = 0xFF7FA8E0;
 
               private TextView status;
               private TextView keysView;
-              private TextView lastView;
-              private int lastKey = -1;
+              private AppUi.Card testCard;
 
               private int dp(int v) {
                   return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                           getResources().getDisplayMetrics());
               }
 
-              private TextView text(ViewGroup parent, String s, int sp) {
+              private TextView text(String s, int sp, int color, boolean medium) {
                   TextView t = new TextView(this);
                   t.setText(s);
                   t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-                  t.setTextColor(0xFFFFFFFF);
-                  t.setPadding(0, dp(8), 0, dp(8));
-                  parent.addView(t);
+                  t.setTextColor(color);
+                  t.setTypeface(Typeface.create(medium ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+                  t.setIncludeFontPadding(false);
                   return t;
               }
 
-              private void button(ViewGroup parent, String s, View.OnClickListener l) {
-                  Button b = new Button(this);
-                  b.setText(s);
-                  b.setOnClickListener(l);
-                  parent.addView(b);
+              private CharSequence colored(String label, String value, int color) {
+                  SpannableStringBuilder sb = new SpannableStringBuilder(label);
+                  int s = sb.length();
+                  sb.append(value);
+                  sb.setSpan(new ForegroundColorSpan(color), s, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  sb.setSpan(new StyleSpan(Typeface.BOLD), s, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                  return sb;
+              }
+
+              private View iconBox(int type, int boxDp, int iconDp, int radiusDp) {
+                  FrameLayout f = new FrameLayout(this);
+                  GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                          new int[]{0xFF2A63E8, 0xFF0B2A80});
+                  g.setCornerRadius(dp(radiusDp));
+                  g.setStroke(dp(1), 0x553D8BFF);
+                  f.setBackground(g);
+                  f.addView(new AppUi.Ic(this, type, 0xFFFFFFFF),
+                          new FrameLayout.LayoutParams(dp(iconDp), dp(iconDp), Gravity.CENTER));
+                  f.setLayoutParams(new LinearLayout.LayoutParams(dp(boxDp), dp(boxDp)));
+                  return f;
+              }
+
+              private LinearLayout statusRow(int iconType, TextView label) {
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setGravity(Gravity.CENTER_VERTICAL);
+                  LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(24), dp(24));
+                  ip.rightMargin = dp(16);
+                  row.addView(new AppUi.Ic(this, iconType, CYAN), ip);
+                  row.addView(label);
+                  return row;
+              }
+
+              private AppUi.Card card(int iconType, String title, String sub, View.OnClickListener l) {
+                  AppUi.Card c = new AppUi.Card(this);
+                  LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(50), dp(50));
+                  ip.rightMargin = dp(20);
+                  c.addView(iconBox(iconType, 50, 28, 14), ip);
+
+                  LinearLayout col = new LinearLayout(this);
+                  col.setOrientation(LinearLayout.VERTICAL);
+                  col.addView(text(title, 22, 0xFFFFFFFF, true));
+                  TextView s = text(sub, 15, 0xFF5E8FE0, false);
+                  s.setPadding(0, dp(4), 0, 0);
+                  col.addView(s);
+                  c.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                  c.addView(new AppUi.Ic(this, AppUi.Ic.CHEVRON, 0xFFBFD6FF),
+                          new LinearLayout.LayoutParams(dp(24), dp(24)));
+                  c.setOnClickListener(l);
+
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, c.totalHeight(62));
+                  lp.leftMargin = -c.bleed();
+                  lp.rightMargin = -c.bleed();
+                  c.setLayoutParams(lp);
+                  return c;
               }
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  LinearLayout root = new LinearLayout(this);
-                  root.setOrientation(LinearLayout.VERTICAL);
-                  root.setPadding(dp(48), dp(32), dp(48), dp(32));
-                  root.setBackgroundColor(0xFF101216);
-                  ScrollView sv = new ScrollView(this);
-                  sv.setBackgroundColor(0xFF101216);
-                  sv.addView(root);
 
-                  text(root, "Painel Lateral", 28);
-                  status = text(root, "", 18);
-                  keysView = text(root, "", 18);
-                  lastView = text(root, "Aperte um botão do controle para detectá-lo "
-                          + "(setas, OK, Voltar, Home e volume são ignorados).", 18);
+                  FrameLayout root = new FrameLayout(this);
+                  root.addView(new AppUi.Bg(this), new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-                  button(root, "Usar o último botão detectado", v -> {
-                      if (lastKey > 0 && Prefs.allowed(lastKey)) {
-                          Set<Integer> k = new LinkedHashSet<>();
-                          k.add(lastKey);
-                          Prefs.save(this, k);
-                          refresh();
-                      }
-                  });
-                  button(root, "Voltar ao botão padrão (engrenagem)", v -> {
-                      Set<Integer> k = new LinkedHashSet<>();
-                      k.add(Prefs.DEFAULT_KEY);
-                      Prefs.save(this, k);
-                      refresh();
-                  });
-                  button(root, "Testar painel", v -> startActivity(new Intent(this, PanelActivity.class)));
-                  button(root, "Abrir configurações de acessibilidade", v -> {
-                      try {
-                          startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-                      } catch (Exception e) {
-                          // tela indisponivel
-                      }
-                  });
+                  // Painel de vidro
+                  FrameLayout glass = new FrameLayout(this);
+                  GradientDrawable gd = new GradientDrawable();
+                  gd.setColor(0xB3050C1E);
+                  gd.setCornerRadius(dp(26));
+                  gd.setStroke(dp(1), 0x401E6BFF);
+                  glass.setBackground(gd);
+                  FrameLayout.LayoutParams gp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                  gp.setMargins(dp(32), dp(32), dp(32), dp(32));
+                  root.addView(glass, gp);
 
-                  text(root, "Para ativar pelo ATV Tools, rode no Shell:", 16);
-                  text(root, "settings put secure enabled_accessibility_services "
-                          + "com.painel.lateral/com.painel.lateral.PanelService", 14);
-                  text(root, "settings put secure accessibility_enabled 1", 14);
+                  LinearLayout col = new LinearLayout(this);
+                  col.setOrientation(LinearLayout.VERTICAL);
+                  col.setPadding(dp(44), dp(36), dp(44), dp(24));
+                  glass.addView(col, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-                  setContentView(sv);
+                  // Cabecalho
+                  LinearLayout header = new LinearLayout(this);
+                  header.setOrientation(LinearLayout.HORIZONTAL);
+                  header.setGravity(Gravity.CENTER_VERTICAL);
+                  header.addView(iconBox(AppUi.Ic.GEAR, 54, 30, 15));
+
+                  View divider = new View(this);
+                  divider.setBackgroundColor(0x66296BDD);
+                  LinearLayout.LayoutParams dv = new LinearLayout.LayoutParams(dp(1), dp(46));
+                  dv.leftMargin = dp(18);
+                  dv.rightMargin = dp(18);
+                  header.addView(divider, dv);
+
+                  LinearLayout titles = new LinearLayout(this);
+                  titles.setOrientation(LinearLayout.VERTICAL);
+                  TextView title = text("", 32, 0xFFFFFFFF, true);
+                  title.setText(colored("Painel ", "Lateral", CYAN));
+                  titles.addView(title);
+                  TextView sub = text("Ferramentas e configurações do painel.", 15, SOFT, false);
+                  sub.setPadding(0, dp(4), 0, 0);
+                  titles.addView(sub);
+                  header.addView(titles);
+                  col.addView(header);
+
+                  // Status
+                  status = text("", 17, 0xFFE6F0FF, false);
+                  keysView = text("", 17, 0xFFE6F0FF, false);
+                  LinearLayout r1 = statusRow(AppUi.Ic.SERVICE, status);
+                  LinearLayout r2 = statusRow(AppUi.Ic.PIN, keysView);
+                  LinearLayout.LayoutParams s1 = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  s1.topMargin = dp(22);
+                  col.addView(r1, s1);
+                  LinearLayout.LayoutParams s2 = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  s2.topMargin = dp(10);
+                  col.addView(r2, s2);
+
+                  TextView hint = text("O botão do controle abre o painel. "
+                          + "(setas, OK, Voltar, Home e volume são ignorados).", 14, 0xFF5E8FE0, false);
+                  LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  hp.leftMargin = dp(40);
+                  hp.topMargin = dp(6);
+                  col.addView(hint, hp);
+
+                  // Itens
+                  testCard = card(AppUi.Ic.MONITOR, "Testar painel", "Verifique se tudo está funcionando.",
+                          v -> startActivity(new Intent(this, PanelActivity.class)));
+                  LinearLayout.LayoutParams c1 = (LinearLayout.LayoutParams) testCard.getLayoutParams();
+                  c1.topMargin = dp(18);
+                  col.addView(testCard, c1);
+
+                  AppUi.Card access = card(AppUi.Ic.ACCESS, "Acessibilidade", "Ative as permissões necessárias.",
+                          v -> {
+                              try {
+                                  startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                              } catch (Exception e) {
+                                  // tela indisponivel
+                              }
+                          });
+                  LinearLayout.LayoutParams c2 = (LinearLayout.LayoutParams) access.getLayoutParams();
+                  c2.topMargin = -dp(8);
+                  col.addView(access, c2);
+
+                  // Usuario e relogio (canto superior direito)
+                  LinearLayout top = new LinearLayout(this);
+                  top.setOrientation(LinearLayout.HORIZONTAL);
+                  top.setGravity(Gravity.CENTER_VERTICAL);
+                  top.addView(text("ramonzk!", 20, 0xFFA9CCFF, true));
+                  View d2 = new View(this);
+                  d2.setBackgroundColor(0x66335599);
+                  LinearLayout.LayoutParams d2p = new LinearLayout.LayoutParams(dp(1), dp(22));
+                  d2p.leftMargin = dp(14);
+                  d2p.rightMargin = dp(14);
+                  top.addView(d2, d2p);
+                  TextClock clock = new TextClock(this);
+                  clock.setFormat24Hour("HH:mm");
+                  clock.setFormat12Hour("HH:mm");
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                  clock.setTextColor(0xFFA9CCFF);
+                  clock.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  top.addView(clock);
+                  FrameLayout.LayoutParams tp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.TOP | Gravity.END);
+                  tp.topMargin = dp(34);
+                  tp.rightMargin = dp(44);
+                  glass.addView(top, tp);
+
+                  setContentView(root);
               }
 
               @Override
               protected void onResume() {
                   super.onResume();
-                  visible = true;
                   refresh();
-              }
-
-              @Override
-              protected void onPause() {
-                  visible = false;
-                  super.onPause();
+                  testCard.requestFocus();
               }
 
               private void refresh() {
                   String en = Settings.Secure.getString(getContentResolver(),
                           Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
                   boolean on = en != null && en.contains(getPackageName());
-                  status.setText("Serviço de acessibilidade: " + (on ? "ATIVO" : "desativado"));
+                  status.setText(colored("Serviço de acessibilidade: ", on ? "ATIVO" : "desativado",
+                          on ? CYAN : 0xFFFF7A7A));
 
                   StringBuilder sb = new StringBuilder();
                   for (int k : Prefs.keys(this)) {
                       if (sb.length() > 0) sb.append(", ");
                       sb.append(KeyEvent.keyCodeToString(k)).append(" (").append(k).append(")");
                   }
-                  keysView.setText("Botão que abre o painel: " + sb);
-              }
-
-              @Override
-              public boolean onKeyDown(int keyCode, KeyEvent event) {
-                  if (Prefs.allowed(keyCode)) {
-                      lastKey = keyCode;
-                      lastView.setText("Último botão detectado: " + KeyEvent.keyCodeToString(keyCode)
-                              + " (código " + keyCode + ")");
-                      return true;
-                  }
-                  return super.onKeyDown(keyCode, event);
+                  keysView.setText(colored("Botão do painel: ", sb.toString(), CYAN));
               }
           }
           EOF_FILE
