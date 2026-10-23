@@ -530,6 +530,7 @@ jobs:
           cat > painel/app/src/main/java/com/painel/lateral/AppsBar.java <<'EOF_FILE'
           package com.painel.lateral;
 
+          import android.app.Activity;
           import android.app.AlertDialog;
           import android.content.ComponentName;
           import android.content.Context;
@@ -557,381 +558,156 @@ jobs:
           import android.widget.LinearLayout;
           import android.widget.TextView;
           import android.widget.Toast;
-
           import java.util.ArrayList;
           import java.util.Collections;
           import java.util.HashSet;
-          import java.util.Set;
           import java.util.LinkedHashMap;
           import java.util.List;
           import java.util.Map;
+          import java.util.Set;
 
-          // Barra de aplicativos (parte de baixo da tela): icones em circulo, fundo transparente.
           final class AppsBar extends FrameLayout {
-              private static final int RING = 0xFF4DA3FF;
-              private static final String PREFS = "apps_bar";
-              private static final String ORDER = "order";
-              private static final String HIDDEN = "hidden";
-              private boolean moving = false;
-              private int selectedIndex = -1;
-
-              private static final class Entry {
-                  String label;
-                  String category;
-                  String pkg;
-                  ComponentName name;
-                  Drawable icon;
-              }
-
+              private static final String PREFS = "apps_bar", ORDER = "order", HIDDEN = "hidden";
+              private static final int BLUE = 0xFF4DA3FF;
               private final HorizontalScrollView scroll;
               private final LinearLayout row;
               private final float d;
               private List<Entry> entries;
-              private boolean loading;
-              private boolean open;
-              private int upId = View.NO_ID;
-              private Runnable onLaunched;
-              private Runnable onOpenChanged;
+              private boolean loading, open, movingMode, longPressHandled;
+              private Entry movingEntry;
+              private int targetIndex = -1, upId = View.NO_ID;
+              private Runnable onLaunched, onOpenChanged;
+
+              private static final class Entry {
+                  String label, category, pkg;
+                  ComponentName name;
+                  Drawable icon;
+              }
 
               AppsBar(Context c) {
                   super(c);
                   d = c.getResources().getDisplayMetrics().density;
                   setVisibility(GONE);
-                  setClipChildren(false);
-                  setClipToPadding(false);
-
+                  setClipChildren(false); setClipToPadding(false);
                   scroll = new HorizontalScrollView(c);
-                  scroll.setHorizontalScrollBarEnabled(false);
-                  scroll.setOverScrollMode(OVER_SCROLL_NEVER);
-                  scroll.setFocusable(false);
-                  scroll.setFillViewport(true);
-                  scroll.setClipChildren(false);
-                  scroll.setClipToPadding(false);
-                  scroll.setPadding(dp(40), dp(24), dp(40), dp(8));
-
-                  row = new LinearLayout(c);
-                  row.setOrientation(LinearLayout.HORIZONTAL);
-                  row.setGravity(Gravity.CENTER);
-                  row.setClipChildren(false);
-                  scroll.addView(row, new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  addView(scroll, new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  scroll.setHorizontalScrollBarEnabled(false); scroll.setOverScrollMode(OVER_SCROLL_NEVER);
+                  scroll.setFocusable(false); scroll.setFillViewport(true);
+                  scroll.setClipChildren(false); scroll.setClipToPadding(false);
+                  scroll.setPadding(dp(36), dp(22), dp(36), dp(12));
+                  row = new LinearLayout(c); row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setGravity(Gravity.CENTER); row.setClipChildren(false);
+                  scroll.addView(row, new FrameLayout.LayoutParams(-2, -2));
+                  addView(scroll, new FrameLayout.LayoutParams(-1, -2));
               }
-
-              private int dp(int v) {
-                  return (int) (v * d);
-              }
-
-              boolean isOpen() {
-                  return open;
-              }
-
-              // Id da view para onde o foco vai ao apertar "cima" na barra.
-              void setUpTarget(int id) {
-                  upId = id;
-              }
-
-              // Notifica a atividade para esconder/mostrar o painel lateral sem sobreposição.
-              void setOnOpenChanged(Runnable callback) {
-                  onOpenChanged = callback;
-              }
+              private int dp(int v) { return (int)(v*d); }
+              boolean isOpen() { return open; }
+              boolean isMovingMode() { return movingMode; }
+              void setUpTarget(int id) { upId = id; }
+              void setOnOpenChanged(Runnable callback) { onOpenChanged = callback; }
+              private android.content.SharedPreferences prefs() { return getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE); }
+              private Set<String> hiddenSet() { return new HashSet<>(prefs().getStringSet(HIDDEN, new HashSet<>())); }
 
               void open(Runnable launched, Runnable onEmpty) {
                   onLaunched = launched;
-                  if (entries != null) {
-                      show(onEmpty);
-                      return;
-                  }
+                  if (entries != null) { show(onEmpty); return; }
                   if (loading) return;
                   loading = true;
-                  final Context c = getContext();
-                  new Thread(() -> {
-                      final List<Entry> list = query(c);
-                      post(() -> {
-                          loading = false;
-                          entries = list;
-                          build();
-                          show(onEmpty);
-                      });
-                  }).start();
+                  Context c = getContext();
+                  new Thread(() -> { List<Entry> found = query(c); post(() -> {
+                      loading = false; entries = found; build(); show(onEmpty);
+                  }); }).start();
               }
-
               void close() {
                   if (!open) return;
-                  open = false;
+                  open = false; movingMode = false; movingEntry = null; targetIndex = -1;
                   if (onOpenChanged != null) onOpenChanged.run();
-                  animate().alpha(0f).translationY(dp(36)).setDuration(180)
-                          .setInterpolator(new DecelerateInterpolator())
-                          .withEndAction(() -> {
-                              if (!open) setVisibility(GONE);
-                          }).start();
+                  animate().alpha(0f).translationY(dp(24)).setDuration(140)
+                      .withEndAction(() -> { if (!open) setVisibility(GONE); }).start();
               }
-
+              void finishEditing() { movingMode = false; movingEntry = null; targetIndex = -1; saveOrder(); }
               private void show(Runnable onEmpty) {
-                  if (entries.isEmpty()) {
-                      if (onEmpty != null) onEmpty.run();
-                      return;
-                  }
-                  open = true;
-                  if (onOpenChanged != null) onOpenChanged.run();
-                  setVisibility(VISIBLE);
-                  setAlpha(0f);
-                  setTranslationY(dp(36));
-                  animate().alpha(1f).translationY(0f).setDuration(240)
-                          .setInterpolator(new DecelerateInterpolator()).start();
-                  for (int i = 0; i < row.getChildCount(); i++) {
-                      View b = row.getChildAt(i);
-                      b.setAlpha(0f);
-                      b.setTranslationY(dp(24));
-                      b.animate().alpha(1f).translationY(0f)
-                              .setStartDelay(Math.min(i, 12) * 28L).setDuration(260)
-                              .setInterpolator(new OvershootInterpolator(1.1f)).start();
-                  }
-                  scroll.scrollTo(0, 0);
-                  row.getChildAt(0).requestFocus();
+                  if (entries.isEmpty()) { if (onEmpty != null) onEmpty.run(); return; }
+                  open = true; if (onOpenChanged != null) onOpenChanged.run();
+                  setVisibility(VISIBLE); setAlpha(0f); setTranslationY(dp(24));
+                  animate().alpha(1f).translationY(0f).setDuration(190).setInterpolator(new DecelerateInterpolator()).start();
+                  for (int i=0;i<row.getChildCount();i++) row.getChildAt(i).animate().alpha(1f).translationY(0f).setStartDelay(Math.min(i,10)*20L).setDuration(180).start();
+                  scroll.scrollTo(0,0); if (row.getChildCount()>0) row.getChildAt(0).requestFocus();
               }
-
-              // Apps com icone na tela inicial da TV (leanback) e, depois, os demais com icone normal.
               private static List<Entry> query(Context c) {
-                  PackageManager pm = c.getPackageManager();
-                  Map<String, Entry> map = new LinkedHashMap<>();
-                  String[] cats = {Intent.CATEGORY_LEANBACK_LAUNCHER, Intent.CATEGORY_LAUNCHER};
-                  for (String cat : cats) {
-                      Intent i = new Intent(Intent.ACTION_MAIN);
-                      i.addCategory(cat);
-                      List<ResolveInfo> found = pm.queryIntentActivities(i, 0);
-                      for (ResolveInfo ri : found) {
-                          String pkg = ri.activityInfo.packageName;
-                          if (pkg.equals(c.getPackageName()) || map.containsKey(pkg)) continue;
-                          Entry e = new Entry();
-                          e.label = String.valueOf(ri.loadLabel(pm));
-                          e.category = cat;
-                          e.pkg = pkg;
-                          e.name = new ComponentName(pkg, ri.activityInfo.name);
-                          e.icon = ri.loadIcon(pm);
-                          map.put(pkg, e);
+                  PackageManager pm=c.getPackageManager(); Map<String,Entry> map=new LinkedHashMap<>();
+                  for (String cat : new String[]{Intent.CATEGORY_LEANBACK_LAUNCHER,Intent.CATEGORY_LAUNCHER}) {
+                      Intent i=new Intent(Intent.ACTION_MAIN); i.addCategory(cat);
+                      for (ResolveInfo ri:pm.queryIntentActivities(i,0)) {
+                          String pkg=ri.activityInfo.packageName; if (pkg.equals(c.getPackageName())||map.containsKey(pkg)) continue;
+                          Entry e=new Entry(); e.label=String.valueOf(ri.loadLabel(pm)); e.category=cat; e.pkg=pkg;
+                          e.name=new ComponentName(pkg,ri.activityInfo.name); e.icon=ri.loadIcon(pm); map.put(pkg,e);
                       }
                   }
-                  List<Entry> list = new ArrayList<>(map.values());
-                  Collections.sort(list, (a, b) -> a.label.compareToIgnoreCase(b.label));
-                  Set<String> hidden = new HashSet<>(c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                          .getStringSet(HIDDEN, new HashSet<>()));
-                  list.removeIf(e -> hidden.contains(e.pkg));
-                  String saved = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(ORDER, "");
-                  if (!saved.isEmpty()) {
-                      Map<String, Integer> ranks = new LinkedHashMap<>();
-                      String[] parts = saved.split("\\|");
-                      for (int j = 0; j < parts.length; j++) ranks.put(parts[j], j);
-                      Collections.sort(list, (x, y) -> {
-                          int rx = ranks.containsKey(x.pkg) ? ranks.get(x.pkg) : Integer.MAX_VALUE;
-                          int ry = ranks.containsKey(y.pkg) ? ranks.get(y.pkg) : Integer.MAX_VALUE;
-                          if (rx != ry) return Integer.compare(rx, ry);
-                          return x.label.compareToIgnoreCase(y.label);
-                      });
-                  }
+                  List<Entry> list=new ArrayList<>(map.values());
+                  list.removeIf(e->new HashSet<>(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>())).contains(e.pkg));
+                  Collections.sort(list,(a,b)->a.label.compareToIgnoreCase(b.label));
+                  String order=c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getString(ORDER,"");
+                  if(!order.isEmpty()) { Map<String,Integer> ranks=new LinkedHashMap<>(); String[] parts=order.split("\\|");
+                      for(int j=0;j<parts.length;j++) ranks.put(parts[j],j);
+                      Collections.sort(list,(a,b)->{int x=ranks.getOrDefault(a.pkg,Integer.MAX_VALUE),y=ranks.getOrDefault(b.pkg,Integer.MAX_VALUE); return x==y?a.label.compareToIgnoreCase(b.label):Integer.compare(x,y);}); }
                   return list;
               }
-
               private void build() {
                   row.removeAllViews();
-                  int n = entries.size();
-                  for (int i = 0; i < n; i++) {
-                      row.addView(bubble(entries.get(i), i, n));
-                  }
+                  for (Entry e:entries) row.addView(bubble(e));
               }
-
-              private View bubble(final Entry e, final int index, final int count) {
-                  Context c = getContext();
-                  final LinearLayout b = new LinearLayout(c);
-                  b.setOrientation(LinearLayout.VERTICAL);
-                  b.setGravity(Gravity.CENTER_HORIZONTAL);
-                  b.setClipChildren(false);
-                  b.setFocusable(true);
-                  b.setClickable(true);
-                  b.setNextFocusUpId(upId);
-
-                  final ImageView circle = new ImageView(c);
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setShape(GradientDrawable.OVAL);
-                  bg.setColor(0xFF131A2B);
-                  circle.setBackground(bg);
-                  circle.setOutlineProvider(new ViewOutlineProvider() {
-                      @Override
-                      public void getOutline(View v, Outline o) {
-                          o.setOval(0, 0, v.getWidth(), v.getHeight());
+              private View bubble(final Entry e) {
+                  Context c=getContext(); LinearLayout b=new LinearLayout(c); b.setOrientation(LinearLayout.VERTICAL); b.setGravity(Gravity.CENTER_HORIZONTAL);
+                  b.setFocusable(true); b.setClickable(true); b.setClipChildren(false); b.setNextFocusUpId(upId);
+                  ImageView icon=new ImageView(c); GradientDrawable bg=new GradientDrawable(); bg.setShape(GradientDrawable.OVAL); bg.setColor(0xFF151B2A); icon.setBackground(bg);
+                  icon.setOutlineProvider(new ViewOutlineProvider(){@Override public void getOutline(View v,Outline o){o.setOval(0,0,v.getWidth(),v.getHeight());}}); icon.setClipToOutline(true);
+                  icon.setScaleType(e.icon instanceof AdaptiveIconDrawable?ImageView.ScaleType.CENTER_CROP:ImageView.ScaleType.FIT_CENTER);
+                  int pad=e.icon instanceof AdaptiveIconDrawable?dp(1):dp(6); icon.setPadding(pad,pad,pad,pad); icon.setImageDrawable(e.icon);
+                  b.addView(icon,new LinearLayout.LayoutParams(dp(68),dp(68)));
+                  TextView label=new TextView(c); label.setText(e.label); label.setTextColor(Color.WHITE); label.setTextSize(TypedValue.COMPLEX_UNIT_SP,13);
+                  label.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL)); label.setGravity(Gravity.CENTER); label.setMaxLines(1); label.setEllipsize(TextUtils.TruncateAt.END); label.setAlpha(0f);
+                  LinearLayout.LayoutParams tl=new LinearLayout.LayoutParams(dp(88),-2); tl.topMargin=dp(8); b.addView(label,tl);
+                  LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2); bp.leftMargin=dp(6); bp.rightMargin=dp(6); b.setLayoutParams(bp);
+                  b.setOnFocusChangeListener((v,focused)->{ icon.animate().scaleX(focused?1.12f:1f).scaleY(focused?1.12f:1f).setDuration(160).start();
+                      label.animate().alpha(focused||movingEntry==e?1f:0f).setDuration(120).start(); if(focused) scroll.post(()->scroll.smoothScrollTo(b.getLeft()+b.getWidth()/2-scroll.getWidth()/2,0)); });
+                  b.setOnKeyListener((v,key,ev)->{
+                      if(key==KeyEvent.KEYCODE_DPAD_CENTER && ev.getAction()==KeyEvent.ACTION_UP && longPressHandled){ longPressHandled=false; return true; }
+                      if(ev.getAction()!=KeyEvent.ACTION_DOWN) return false;
+                      int at=entries.indexOf(e);
+                      if(key==KeyEvent.KEYCODE_BACK && movingMode){ finishEditing(); Toast.makeText(getContext(),"Ordem salva",Toast.LENGTH_SHORT).show(); ((Activity)getContext()).finish(); return true; }
+                      if(key==KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount()>=1 && !movingMode && !longPressHandled){
+                          longPressHandled=true;
+                          new AlertDialog.Builder(getContext()).setTitle(e.label).setItems(new String[]{"Mover apps","Ocultar esse app"},(dlg,which)->{
+                              if(which==0){ movingMode=true; movingEntry=e; targetIndex=entries.indexOf(e); build(); int idx=entries.indexOf(e); if(idx>=0){View item=row.getChildAt(idx); item.requestFocus(); item.animate().translationY(-dp(10)).setDuration(160).start();} Toast.makeText(getContext(),"Mover: use as setas; OK para posicionar; Voltar para salvar",Toast.LENGTH_LONG).show(); }
+                              else hideApp(e);
+                          }).show(); return true;
                       }
-                  });
-                  circle.setClipToOutline(true);
-                  if (e.icon instanceof AdaptiveIconDrawable) {
-                      circle.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                      circle.setPadding(dp(1), dp(1), dp(1), dp(1));
-                  } else {
-                      // Os ícones comuns recebem menos margem; a máscara circular mantém o desenho limpo.
-                      circle.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                      int p = dp(7);
-                      circle.setPadding(p, p, p, p);
-                  }
-                  circle.setImageDrawable(e.icon);
-                  b.addView(circle, new LinearLayout.LayoutParams(dp(68), dp(68)));
-
-                  final TextView label = new TextView(c);
-                  label.setText(e.label);
-                  label.setTextColor(0xFFFFFFFF);
-                  label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-                  label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                  label.setGravity(Gravity.CENTER);
-                  label.setMaxLines(1);
-                  label.setEllipsize(TextUtils.TruncateAt.END);
-                  label.setShadowLayer(dp(4), 0f, dp(1), 0xFF000000);
-                  label.setAlpha(0f);
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(88),
-                          ViewGroup.LayoutParams.WRAP_CONTENT);
-                  lp.topMargin = dp(10);
-                  b.addView(label, lp);
-
-                  LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  bp.leftMargin = dp(6);
-                  bp.rightMargin = dp(6);
-                  b.setLayoutParams(bp);
-
-                  final GradientDrawable ring = new GradientDrawable();
-                  ring.setShape(GradientDrawable.OVAL);
-                  ring.setColor(Color.TRANSPARENT);
-                  ring.setStroke(dp(3), RING);
-
-                  // Animacao de selecao: cresce com "mola", ganha anel azul e mostra o nome.
-                  b.setOnFocusChangeListener((v, focused) -> {
-                      circle.setForeground(focused ? ring : null);
-                      circle.animate().scaleX(focused ? 1.22f : 1f).scaleY(focused ? 1.22f : 1f)
-                              .setDuration(focused ? 240 : 160)
-                              .setInterpolator(focused ? new OvershootInterpolator(2.2f)
-                                      : new DecelerateInterpolator()).start();
-                      label.animate().alpha(focused ? 1f : 0f).translationY(focused ? 0f : -dp(4))
-                              .setDuration(160).start();
-                      if (focused) {
-                          scroll.post(() -> scroll.smoothScrollTo(
-                                  b.getLeft() + b.getWidth() / 2 - scroll.getWidth() / 2, 0));
+                      if(movingMode){
+                          if(key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT){int next=at+(key==KeyEvent.KEYCODE_DPAD_LEFT?-1:1); if(next>=0&&next<entries.size()){View target=row.getChildAt(next); if(target!=null) target.requestFocus();} return true;}
+                          if(key==KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount()==0){
+                              if(movingEntry==null){movingEntry=e;} else if(movingEntry!=e){ int old=entries.indexOf(movingEntry), dest=entries.indexOf(e); if(old>=0&&dest>=0){Entry item=entries.remove(old); entries.add(dest,item);} }
+                              saveOrder(); build(); int idx=entries.indexOf(movingEntry); if(idx>=0){View item=row.getChildAt(idx); item.requestFocus(); item.animate().translationY(-dp(10)).setDuration(150).start();} return true;
+                          }
+                          if(key==KeyEvent.KEYCODE_DPAD_DOWN) return true;
                       }
-                  });
-
-                  b.setOnKeyListener((v, keyCode, ev) -> {
-                      if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return true;
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && index == 0) return true;
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && index == count - 1) return true;
+                      if(key==KeyEvent.KEYCODE_DPAD_DOWN) return true;
                       return false;
                   });
-
-                  // Animacao ao clicar: encolhe, depois "estoura" e abre o app.
-                  b.setOnKeyListener((v, keyCode, ev) -> {
-                      int at = entries.indexOf(e);
-                      if (ev.getAction() == KeyEvent.ACTION_DOWN) {
-                          if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount() >= 2 && !moving) {
-                              moving = true;
-                              selectedIndex = at;
-                              b.animate().translationY(-dp(12)).scaleX(1.06f).scaleY(1.06f).setDuration(180).start();
-                              circle.setForeground(ring);
-                              label.setAlpha(1f);
-                              Toast.makeText(getContext(), "Mover: use ◀ ▶; OK de novo para opções", Toast.LENGTH_LONG).show();
-                              return true;
-                          }
-                          if (moving && selectedIndex >= 0) {
-                              if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                                  int target = at + (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1);
-                                  if (target >= 0 && target < entries.size()) {
-                                      Entry item = entries.remove(at);
-                                      entries.add(target, item);
-                                      selectedIndex = target;
-                                      saveOrder();
-                                      build();
-                                      row.getChildAt(target).requestFocus();
-                                      row.getChildAt(target).animate().translationY(-dp(12)).setDuration(160).start();
-                                  }
-                                  return true;
-                              }
-                              if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER && ev.getRepeatCount() == 0) {
-                                  Entry chosen = entries.get(at);
-                                  new AlertDialog.Builder(getContext()).setTitle(chosen.label)
-                                      .setItems(new String[]{"Ocultar aplicativo", "Continuar movendo", "Concluir"},
-                                        (dialog, which) -> {
-                                          if (which == 0) {
-                                            Set<String> hidden = new HashSet<>(getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).getStringSet("hidden", new HashSet<>()));
-                                            hidden.add(chosen.pkg);
-                                            getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).edit().putStringSet("hidden", hidden).apply();
-                                            entries.remove(chosen);
-                                            moving = false; selectedIndex = -1; saveOrder(); build();
-                                            if (row.getChildCount() > 0) row.getChildAt(0).requestFocus(); else close();
-                                          } else if (which == 2) {
-                                            moving = false; selectedIndex = -1; saveOrder(); build();
-                                            if (row.getChildCount() > 0) row.getChildAt(Math.min(at, row.getChildCount()-1)).requestFocus();
-                                            Toast.makeText(getContext(), "Ordem salva", Toast.LENGTH_SHORT).show();
-                                          }
-                                        }).show();
-                                  return true;
-                              }
-                              if (keyCode == KeyEvent.KEYCODE_BACK) { moving = false; selectedIndex = -1; saveOrder(); build(); return true; }
-                          }
-                      }
-                      return false;
-                  });
-                  b.setOnClickListener(v -> {
-                      if (moving) {
-                          int at = entries.indexOf(e);
-                          if (at == selectedIndex) {
-                              new AlertDialog.Builder(getContext()).setTitle(e.label)
-                                  .setItems(new String[]{"Ocultar aplicativo", "Concluir"},
-                                    (dialog, which) -> {
-                                      if (which == 0) {
-                                        Set<String> hidden = new HashSet<>(getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).getStringSet("hidden", new HashSet<>()));
-                                        hidden.add(e.pkg);
-                                        getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE).edit().putStringSet("hidden", hidden).apply();
-                                        entries.remove(e); moving = false; selectedIndex = -1; saveOrder(); build();
-                                        if (row.getChildCount() > 0) row.getChildAt(0).requestFocus(); else close();
-                                      } else { moving = false; selectedIndex = -1; saveOrder(); build(); }
-                                    }).show();
-                          } else {
-                              moving = false; selectedIndex = -1; saveOrder(); build();
-                          }
-                          return;
-                      }
-                      b.setClickable(false);
-                      circle.animate().scaleX(0.82f).scaleY(0.82f).setDuration(90)
-                              .setInterpolator(new DecelerateInterpolator())
-                              .withEndAction(() -> circle.animate().scaleX(1.4f).scaleY(1.4f)
-                                      .alpha(0f).setDuration(160)
-                                      .withEndAction(() -> launch(e, b, circle)).start())
-                              .start();
-                  });
+                  b.setOnClickListener(v->{ if(movingMode){ if(movingEntry==null) movingEntry=e; else if(movingEntry!=e){int old=entries.indexOf(movingEntry),dest=entries.indexOf(e);if(old>=0&&dest>=0){Entry item=entries.remove(old);entries.add(dest,item);saveOrder();build();}} return; }
+                      b.setClickable(false); icon.animate().scaleX(.88f).scaleY(.88f).setDuration(80).withEndAction(()->launch(e,b,icon)).start(); });
                   return b;
               }
-
-              private void saveOrder() {
-                  StringBuilder out = new StringBuilder();
-                  for (Entry item : entries) {
-                      if (out.length() > 0) out.append('|');
-                      out.append(item.pkg);
-                  }
-                  getContext().getSharedPreferences("apps_bar", Context.MODE_PRIVATE)
-                          .edit().putString("order", out.toString()).apply();
+              private void hideApp(Entry e){Set<String> hidden=hiddenSet();hidden.add(e.pkg);prefs().edit().putStringSet(HIDDEN,hidden).apply();entries.remove(e);saveOrder();((Activity)getContext()).finish();}
+              private void saveOrder(){if(entries==null)return;StringBuilder s=new StringBuilder();for(Entry e:entries){if(s.length()>0)s.append('|');s.append(e.pkg);}prefs().edit().putString(ORDER,s.toString()).apply();}
+              static void showHiddenApps(Context c){
+                  PackageManager pm=c.getPackageManager(); Set<String> hidden=new HashSet<>(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));
+                  if(hidden.isEmpty()){new AlertDialog.Builder(c).setTitle("Apps ocultos").setMessage("Não há aplicativos ocultos.").setPositiveButton("OK",null).show();return;}
+                  List<String> pkgs=new ArrayList<>(hidden), labels=new ArrayList<>(); Map<String,String> labelToPkg=new LinkedHashMap<>();
+                  for(String pkg:pkgs){try{String label=String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg,0)));labels.add(label);labelToPkg.put(label,pkg);}catch(Exception ignored){labels.add(pkg);labelToPkg.put(pkg,pkg);}}
+                  String[] opts=new String[labels.size()];for(int i=0;i<opts.length;i++)opts[i]=labels.get(i);
+                  new AlertDialog.Builder(c).setTitle("Apps ocultos").setItems(opts,(dlg,which)->{String pkg=labelToPkg.get(opts[which]);Set<String> now=new HashSet<>(c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).getStringSet(HIDDEN,new HashSet<>()));now.remove(pkg);c.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putStringSet(HIDDEN,now).apply();Toast.makeText(c,opts[which]+" voltou para Aplicativos",Toast.LENGTH_SHORT).show();}).setNegativeButton("Fechar",null).show();
               }
-
-              private void launch(Entry e, View b, ImageView circle) {
-                  Intent i = new Intent(Intent.ACTION_MAIN);
-                  i.addCategory(e.category);
-                  i.setComponent(e.name);
-                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-                  try {
-                      getContext().startActivity(i);
-                      if (onLaunched != null) onLaunched.run();
-                  } catch (Exception ex) {
-                      Toast.makeText(getContext(), "Não foi possível abrir", Toast.LENGTH_SHORT).show();
-                      circle.setAlpha(1f);
-                      circle.animate().scaleX(1.22f).scaleY(1.22f).setDuration(160).start();
-                      b.setClickable(true);
-                  }
-              }
+              private void launch(Entry e,View b,ImageView icon){Intent i=new Intent(Intent.ACTION_MAIN);i.addCategory(e.category);i.setComponent(e.name);i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);try{getContext().startActivity(i);if(onLaunched!=null)onLaunched.run();}catch(Exception ex){Toast.makeText(getContext(),"Não foi possível abrir",Toast.LENGTH_SHORT).show();icon.setAlpha(1f);b.setClickable(true);}}
           }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/PanelActivity.java <<'EOF_FILE'
@@ -1066,7 +842,7 @@ jobs:
                       closeApps();
                       return;
                   }
-                  appsBar.open(() -> { appsBar.close(); panel.setVisibility(View.VISIBLE); }, () -> Toast.makeText(this,
+                  appsBar.open(() -> { appsBar.close(); finish(); }, () -> Toast.makeText(this,
                           "Nenhum aplicativo encontrado", Toast.LENGTH_SHORT).show());
               }
 
@@ -1078,6 +854,11 @@ jobs:
               @Override
               public void onBackPressed() {
                   if (appsBar != null && appsBar.isOpen()) {
+                      if (appsBar.isMovingMode()) {
+                          appsBar.finishEditing();
+                          finish();
+                          return;
+                      }
                       closeApps();
                       return;
                   }
@@ -1669,6 +1450,12 @@ jobs:
                   LinearLayout.LayoutParams c2 = (LinearLayout.LayoutParams) access.getLayoutParams();
                   c2.topMargin = -dp(8);
                   col.addView(access, c2);
+
+                  AppUi.Card hiddenApps = card(AppUi.Ic.ACCESS, "Apps ocultos", "Gerencie os aplicativos ocultados da lista.",
+                          v -> AppsBar.showHiddenApps(this));
+                  LinearLayout.LayoutParams hiddenLp = (LinearLayout.LayoutParams) hiddenApps.getLayoutParams();
+                  hiddenLp.topMargin = -dp(8);
+                  col.addView(hiddenApps, hiddenLp);
 
                   // Usuario e relogio (canto superior direito)
                   LinearLayout top = new LinearLayout(this);
