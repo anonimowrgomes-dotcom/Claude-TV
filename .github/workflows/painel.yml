@@ -98,13 +98,7 @@ jobs:
 
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.intent.action.MAIN" />
-                          <category android:name="android.intent.category.LAUNCHER" />
-                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-                      </intent-filter>
-                  </activity>
+                      android:exported="false" />
 
                   <activity
                       android:name=".PanelActivity"
@@ -828,8 +822,6 @@ jobs:
               private int level;
               private TextView levelText;
               private BarView bar;
-              private AppsBar appsBar;
-              private View appsRow;
 
               private int dp(int v) {
                   return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
@@ -852,7 +844,7 @@ jobs:
                   panel.setOrientation(LinearLayout.VERTICAL);
                   panel.setClipChildren(false);
                   panel.setClipToPadding(false);
-                  panel.setPadding(dp(12), dp(12), dp(12), dp(12));
+                  panel.setPadding(dp(9), dp(9), dp(9), dp(9));
                   GradientDrawable bg = new GradientDrawable();
                   bg.setColor(0xE6080A0E);
                   bg.setCornerRadius(dp(22));
@@ -860,32 +852,24 @@ jobs:
                   panel.setBackground(bg);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                          dp(340), ViewGroup.LayoutParams.WRAP_CONTENT,
+                          dp(280), ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.END | Gravity.TOP);
-                  lp.rightMargin = dp(24);
-                  lp.topMargin = dp(24);
+                  lp.rightMargin = dp(18);
+                  lp.topMargin = dp(18);
                   root.setClipChildren(false);
                   root.setClipToPadding(false);
                   panel.setClipChildren(false);
                   panel.setClipToPadding(false);
                   root.addView(panel, lp);
 
-                  // Barra de aplicativos (parte de baixo da tela, fundo transparente).
-                  appsBar = new AppsBar(this);
-                  FrameLayout.LayoutParams ap = new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                          Gravity.BOTTOM);
-                  ap.bottomMargin = dp(28);
-                  root.addView(appsBar, ap);
-
                   LinearLayout header = new LinearLayout(this);
                   header.setOrientation(LinearLayout.HORIZONTAL);
                   header.setGravity(Gravity.CENTER_VERTICAL);
-                  header.setPadding(dp(10), dp(4), dp(10), dp(8));
+                  header.setPadding(dp(7), dp(2), dp(7), dp(5));
 
                   TextView caption = new TextView(this);
                   caption.setText("ramonzk!");
-                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
                   caption.setTextColor(0xFFFFFFFF);
                   caption.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                           android.graphics.Typeface.NORMAL));
@@ -896,21 +880,14 @@ jobs:
                   TextClock clock = new TextClock(this);
                   clock.setFormat24Hour("HH:mm");
                   clock.setFormat12Hour("HH:mm");
-                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
                   clock.setTextColor(0xFFFFFFFF);
                   clock.setTypeface(caption.getTypeface());
                   header.addView(clock);
                   panel.addView(header);
 
-                  // Ordem: Brilho, Aplicativos, Tela e imagem, Protetor de tela, Wi-Fi, Configurações.
+                  // Menu compacto: sem a opção Aplicativos.
                   brightnessRow();
-                  appsRow = row(IconView.APPS, "Aplicativos", this::toggleApps);
-                  appsRow.setId(View.generateViewId());
-                  appsBar.setUpTarget(appsRow.getId());
-                  appsBar.setOnOpenChanged(() -> {
-                      if (appsBar.isOpen()) panel.setVisibility(View.GONE);
-                      else panel.setVisibility(View.VISIBLE);
-                  });
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
@@ -924,31 +901,8 @@ jobs:
                   if (first != null) first.requestFocus();
               }
 
-              private void toggleApps() {
-                  if (appsBar.isOpen()) {
-                      closeApps();
-                      return;
-                  }
-                  appsBar.open(() -> { appsBar.close(); finish(); }, () -> Toast.makeText(this,
-                          "Nenhum aplicativo encontrado", Toast.LENGTH_SHORT).show());
-              }
-
-              private void closeApps() {
-                  appsBar.close();
-                  appsRow.requestFocus();
-              }
-
               @Override
               public void onBackPressed() {
-                  if (appsBar != null && appsBar.isOpen()) {
-                      if (appsBar.isMovingMode()) {
-                          appsBar.finishEditing();
-                          finish();
-                          return;
-                      }
-                      closeApps();
-                      return;
-                  }
                   super.onBackPressed();
               }
 
@@ -978,7 +932,7 @@ jobs:
               private void addToPanel(View v) {
                   LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  p.bottomMargin = dp(6);
+                  p.bottomMargin = dp(4);
                   p.leftMargin = dp(3);
                   p.rightMargin = dp(3);
                   panel.addView(v, p);
@@ -988,7 +942,7 @@ jobs:
               private TextView label(String s) {
                   TextView t = new TextView(this);
                   t.setText(s);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
                   t.setTextColor(0xFFFFFFFF);
                   return t;
               }
@@ -997,12 +951,12 @@ jobs:
                   LinearLayout row = new LinearLayout(this);
                   row.setOrientation(LinearLayout.HORIZONTAL);
                   row.setGravity(Gravity.CENTER_VERTICAL);
-                  row.setPadding(dp(14), dp(12), dp(14), dp(12));
+                  row.setPadding(dp(10), dp(8), dp(10), dp(8));
 
                   row.addView(new IconView(this, icon), new LinearLayout.LayoutParams(dp(26), dp(26)));
                   LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tp.leftMargin = dp(16);
+                  tp.leftMargin = dp(11);
                   row.addView(label(text), tp);
 
                   row.setFocusable(true);
@@ -1015,16 +969,16 @@ jobs:
               private void brightnessRow() {
                   LinearLayout box = new LinearLayout(this);
                   box.setOrientation(LinearLayout.VERTICAL);
-                  box.setPadding(dp(14), dp(12), dp(14), dp(10));
+                  box.setPadding(dp(10), dp(8), dp(10), dp(7));
 
                   LinearLayout top = new LinearLayout(this);
                   top.setOrientation(LinearLayout.HORIZONTAL);
                   top.setGravity(Gravity.CENTER_VERTICAL);
-                  top.addView(new IconView(this, IconView.SUN), new LinearLayout.LayoutParams(dp(26), dp(26)));
+                  top.addView(new IconView(this, IconView.SUN), new LinearLayout.LayoutParams(dp(22), dp(22)));
 
                   LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
                           0, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tp.leftMargin = dp(16);
+                  tp.leftMargin = dp(11);
                   tp.weight = 1f;
                   top.addView(label("Brilho"), tp);
 
