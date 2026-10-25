@@ -1238,7 +1238,7 @@ jobs:
                   StringBuilder sb = new StringBuilder(); for (Apps.Entry a : visibleApps) { if (sb.length()>0) sb.append('|'); sb.append(a.pkg); }
                   getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putString("order", sb.toString()).apply();
                   buildDock();
-                  dockScroll.post(() -> dockScroll.smoothScrollTo(Math.max(0, px((w*0.075f + w*0.006f) * Math.max(0, to - 3)))));
+                  dockScroll.post(() -> dockScroll.smoothScrollTo(Math.max(0, px((w*0.075f + w*0.006f) * Math.max(0, to - 3))), 0));
               }
 
               private void finishMoving() { moveMode = false; movingPackage = null; buildDock(); Toast.makeText(this, "Ordem dos aplicativos salva", Toast.LENGTH_SHORT).show(); }
