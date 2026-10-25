@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 10
-                  versionName '1.9'
+                  versionCode 11
+                  versionName '2.0'
               }
 
               compileOptions {
@@ -449,7 +449,7 @@ jobs:
                   int band = Math.max(1, reflectPx - gapPx);
                   shader = new LinearGradient(0f, 0f, 0f, band,
                           new int[] { 0x40000000, 0x14000000, 0x00000000 },
-                          new float[] { 0f, 0.4f, 1f }, Shader.TileMode.CLAMP);
+                          new float[] { 0f, 0.4f, 0.9f }, Shader.TileMode.CLAMP);
                   fade.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
               }
 
@@ -489,7 +489,11 @@ jobs:
                       }
 
                       // reflexo suave
-                      int save = canvas.saveLayer(l, top, r, top + band, null);
+                      // limites inteiros e a mascara de esmaecimento cobrindo a camada inteira,
+                      // senao sobrava uma linha fina do reflexo na ultima fileira de pixels.
+                      float lyT = (float) Math.floor(top);
+                      float lyB = (float) Math.ceil(top + band) + 1f;
+                      int save = canvas.saveLayer(l, lyT, r, lyB, null);
                       canvas.save();
                       canvas.translate(0f, gapPx);
                       canvas.scale(1f, -1f, 0f, axis);
@@ -498,7 +502,7 @@ jobs:
                       m.setTranslate(0f, top);
                       shader.setLocalMatrix(m);
                       fade.setShader(shader);
-                      canvas.drawRect(l, top, r, top + band, fade);
+                      canvas.drawRect(l - 1f, lyT - 1f, r + 1f, lyB + 1f, fade);
                       canvas.restoreToCount(save);
                   }
               }
@@ -534,6 +538,7 @@ jobs:
               static final int LED = 0xFF2D8CFF;
 
               private final FrameLayout holder;
+              private final boolean isRound;
               private final Neon neon;
               private ValueAnimator focusAnim;
 
@@ -543,10 +548,23 @@ jobs:
                   setClickable(true);
                   // O realce quadrado padrao da TV aparecia atras dos botoes redondos.
                   setDefaultFocusHighlightEnabled(false);
-                  setClipChildren(false);
-                  setClipToPadding(false);
+                  isRound = oval;
                   final boolean isOval = oval;
                   final float r = radius;
+                  if (oval) {
+                      // Botoes redondos: tudo recortado no circulo, so o contorno do anel aparece.
+                      setClipChildren(true);
+                      setClipToOutline(true);
+                      setOutlineProvider(new ViewOutlineProvider() {
+                          @Override
+                          public void getOutline(View v, Outline o) {
+                              o.setOval(0, 0, v.getWidth(), v.getHeight());
+                          }
+                      });
+                  } else {
+                      setClipChildren(false);
+                      setClipToPadding(false);
+                  }
                   holder = new FrameLayout(c);
                   holder.setClipToOutline(true);
                   holder.setOutlineProvider(new ViewOutlineProvider() {
@@ -594,7 +612,7 @@ jobs:
                   super.onFocusChanged(gained, direction, previouslyFocusedRect);
                   float s = gained ? 1.08f : 1f;
                   animate().scaleX(s).scaleY(s).setDuration(140).start();
-                  setTranslationZ(gained ? 12f : 0f);
+                  if (!isRound) setTranslationZ(gained ? 12f : 0f);
                   if (focusAnim != null) focusAnim.cancel();
                   focusAnim = ValueAnimator.ofFloat(neon.focus, gained ? 1f : 0f);
                   focusAnim.setDuration(150);
@@ -760,6 +778,23 @@ jobs:
                       float w = getWidth();
                       float h = getHeight();
                       float f = focus;
+
+                      if (oval) {
+                          // somente o contorno: anel colorido em repouso, anel azul LED com foco
+                          p.setStrokeWidth(ringPx);
+                          p.setShader(edge);
+                          p.setColor(idle);
+                          p.setAlpha((int) (235 * (1f - f)));
+                          r.set(ringPx / 2f, ringPx / 2f, w - ringPx / 2f, h - ringPx / 2f);
+                          c.drawOval(r, p);
+                          p.setShader(null);
+                          if (f > 0.01f) {
+                              p.setColor(LED);
+                              p.setAlpha((int) (255 * f));
+                              c.drawOval(r, p);
+                          }
+                          return;
+                      }
 
                       // aura neon suave em volta (some quando o anel LED aparece)
                       if (f < 0.99f) {
@@ -1336,6 +1371,7 @@ jobs:
 
               private LinearLayout panel;
               private HorizontalScrollView panelScroll;
+              private View panelBar;
               private int itemW;
               private View first;
               private int level;
@@ -1369,27 +1405,42 @@ jobs:
                   panel = new LinearLayout(this);
                   panel.setOrientation(LinearLayout.HORIZONTAL);
                   panel.setGravity(Gravity.CENTER);
-                  panel.setPadding(dp(18), dp(12), dp(18), dp(12));
+                  panel.setPadding(dp(18), 0, dp(18), 0);
                   GradientDrawable bg = new GradientDrawable();
                   bg.setColor(0x66111419);
                   bg.setCornerRadius(dp(34));
                   bg.setStroke(dp(1), 0x332E405A);
 
+                  // Fundo arredondado fixo; a lista rola por cima com folga em cima e embaixo,
+                  // para o seletor e o zoom nunca serem cortados.
+                  View panelBgView = new View(this);
+                  panelBgView.setBackground(bg);
+
                   panelScroll = new HorizontalScrollView(this);
-                  panelScroll.setBackground(bg);
                   panelScroll.setHorizontalScrollBarEnabled(false);
                   panelScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                  panelScroll.setClipChildren(false);
+                  panelScroll.setClipToPadding(false);
                   panelScroll.addView(panel, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  FrameLayout bar = new FrameLayout(this);
+                  bar.setClipChildren(false);
+                  bar.setClipToPadding(false);
+                  bar.addView(panelBgView, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(112), Gravity.CENTER_VERTICAL));
+                  bar.addView(panelScroll, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  panelBar = bar;
 
                   // 5 funcoes cabem na tela; as demais ficam ao lado.
                   int sw = getResources().getDisplayMetrics().widthPixels;
                   itemW = (sw - dp(48) - dp(36)) / 5 - dp(10);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, dp(112), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-                  lp.leftMargin = dp(24); lp.rightMargin = dp(24); lp.bottomMargin = dp(22);
-                  root.addView(panelScroll, lp);
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(160), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  lp.leftMargin = dp(24); lp.rightMargin = dp(24); lp.bottomMargin = 0;
+                  root.addView(bar, lp);
 
                   TextView caption = new TextView(this);
                   volumeRow();
@@ -1401,10 +1452,10 @@ jobs:
                   row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
                   row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
 
-                  panelScroll.setAlpha(0f);
-                  panelScroll.setTranslationX(dp(40));
+                  panelBar.setAlpha(0f);
+                  panelBar.setTranslationX(dp(40));
                   setContentView(root);
-                  panelScroll.animate().alpha(1f).translationX(0f).setDuration(200).start();
+                  panelBar.animate().alpha(1f).translationX(0f).setDuration(200).start();
                   if (first != null) first.requestFocus();
               }
 
@@ -1416,7 +1467,7 @@ jobs:
 
               private GradientDrawable rowBg(boolean focused) {
                   GradientDrawable d = new GradientDrawable();
-                  d.setColor(0x00000000);
+                  d.setColor(focused ? 0x2B2D4A75 : 0x00000000);
                   d.setCornerRadius(dp(16));
                   d.setStroke(focused ? dp(2) : dp(1), focused ? 0xFF68A5FF : 0x003D7BFF);
                   return d;
@@ -1428,14 +1479,13 @@ jobs:
                       GradientDrawable d = rowBg(hasFocus);
                       if (hasFocus) d.setStroke(dp(2), 0xFF68A5FF);
                       view.setBackground(d);
-                      view.setElevation(hasFocus ? dp(10) : 0);
                       float sc = hasFocus ? 1.06f : 1f;
                       view.animate().scaleX(sc).scaleY(sc).setDuration(130).start();
                   });
               }
 
               private void addToPanel(View v) {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(itemW, ViewGroup.LayoutParams.MATCH_PARENT);
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(itemW, dp(88));
                   p.leftMargin = dp(5); p.rightMargin = dp(5);
                   panel.addView(v, p);
                   if (first == null) first = v;
