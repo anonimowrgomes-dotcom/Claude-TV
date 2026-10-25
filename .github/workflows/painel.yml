@@ -938,8 +938,6 @@ jobs:
           package com.painel.lateral;
 
           import android.app.Activity;
-          import android.app.AlertDialog;
-          import android.content.DialogInterface;
           import android.content.Intent;
           import android.graphics.Typeface;
           import android.graphics.drawable.GradientDrawable;
@@ -968,6 +966,9 @@ jobs:
               private float w;
               private float h;
               private LinearLayout dock;
+              private HorizontalScrollView dockScroll;
+              private TextView arrowHint;
+              private boolean dockVisible = false;
               private int lastIndex = 0;
 
               private int px(float v) {
@@ -1001,8 +1002,8 @@ jobs:
                   FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.TOP | Gravity.START);
-                  cl.leftMargin = px(w * 0.031f);
-                  cl.topMargin = px(h * 0.0617f - clockPx * 0.62f);
+                  cl.leftMargin = px(w * 0.012f);
+                  cl.topMargin = px(h * 0.012f);
                   root.addView(clock, cl);
 
                   // botoes redondos no canto superior direito
@@ -1015,25 +1016,38 @@ jobs:
                   root.addView(circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS)),
                           topRight(d, right + d + gap, top));
 
-                  // fileira de apps embaixo
-                  HorizontalScrollView scroll = new HorizontalScrollView(this);
-                  scroll.setHorizontalScrollBarEnabled(false);
-                  scroll.setClipChildren(false);
-                  scroll.setClipToPadding(false);
+                  // Indicador discreto: pressione para baixo para revelar os aplicativos.
+                  arrowHint = new TextView(this);
+                  arrowHint.setText("⌃");
+                  arrowHint.setTextColor(0xCCFFFFFF);
+                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.025f);
+                  arrowHint.setGravity(Gravity.CENTER);
+                  arrowHint.setFocusable(false);
+                  FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(
+                          px(w * 0.07f), px(h * 0.055f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  al.bottomMargin = px(h * 0.015f);
+                  root.addView(arrowHint, al);
+
+                  // Fileira larga de aplicativos, escondida inicialmente.
+                  dockScroll = new HorizontalScrollView(this);
+                  dockScroll.setHorizontalScrollBarEnabled(false);
+                  dockScroll.setClipChildren(false);
+                  dockScroll.setClipToPadding(false);
                   int padV = px(w * 0.012f);
-                  int padH = px(w * 0.0197f);
-                  scroll.setPadding(padH, padV, padH, padV);
+                  int padH = px(w * 0.012f);
+                  dockScroll.setPadding(padH, padV, padH, padV);
                   dock = new LinearLayout(this);
                   dock.setOrientation(LinearLayout.HORIZONTAL);
                   dock.setClipChildren(false);
-                  scroll.addView(dock, new FrameLayout.LayoutParams(
+                  dockScroll.addView(dock, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  float tileH = w * 0.0592f;
+                  float tileH = w * 0.075f;
                   FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + padV * 2,
                           Gravity.BOTTOM);
-                  sl.bottomMargin = px(h * 0.093f - padV);
-                  root.addView(scroll, sl);
+                  sl.bottomMargin = px(h * 0.035f - padV);
+                  dockScroll.setVisibility(View.GONE);
+                  root.addView(dockScroll, sl);
 
                   setContentView(root);
               }
@@ -1070,6 +1084,34 @@ jobs:
               }
 
               @Override
+              public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+                  if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) {
+                          showDock();
+                          return true;
+                      }
+                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
+                          hideDock();
+                          return true;
+                      }
+                  }
+                  return super.dispatchKeyEvent(event);
+              }
+
+              private void showDock() {
+                  dockVisible = true;
+                  dockScroll.setVisibility(View.VISIBLE);
+                  arrowHint.setVisibility(View.GONE);
+                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+              }
+
+              private void hideDock() {
+                  dockVisible = false;
+                  dockScroll.setVisibility(View.GONE);
+                  arrowHint.setVisibility(View.VISIBLE);
+              }
+
+              @Override
               protected void onResume() {
                   super.onResume();
                   buildDock();
@@ -1080,6 +1122,7 @@ jobs:
                   super.onNewIntent(intent);
                   // Home apertado de novo: volta para o primeiro item
                   lastIndex = 0;
+                  hideDock();
                   buildDock();
               }
 
@@ -1090,10 +1133,9 @@ jobs:
 
               private void buildDock() {
                   dock.removeAllViews();
-                  float tileH = w * 0.0592f;
-                  float appW = w * 0.1135f;
-                  float ctlW = w * 0.0778f;
-                  int gap = px(w * 0.0066f);
+                  float tileH = w * 0.075f;
+                  float appW = (w - px(w * 0.024f) - px(w * 0.006f) * 5) / 6f;
+                  int gap = px(w * 0.006f);
                   float radius = w * 0.0072f;
                   int ring = px(w * 0.0018f) + 2;
 
@@ -1101,41 +1143,23 @@ jobs:
                   for (Apps.Entry e : Apps.all(this)) byPkg.put(e.pkg, e);
 
                   List<View> tiles = new ArrayList<>();
+                  int shown = 0;
                   for (String pkg : Apps.favorites(this)) {
+                      if (shown >= 6) break;
                       final Apps.Entry e = byPkg.get(pkg);
                       if (e == null) continue;
+                      shown++;
                       Tile t = new Tile(this, false, radius, ring);
                       t.setContent(appContent(e), new FrameLayout.LayoutParams(
                               ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                       t.setOnClickListener(v -> Apps.launch(this, e));
-                      t.setLongClickable(true);
-                      t.setOnLongClickListener(v -> {
-                          askRemove(e);
-                          return true;
-                      });
+                      t.setLongClickable(false);
+                      t.setOnLongClickListener(null);
                       dock.addView(t, tileLp(appW, tileH, gap));
                       tiles.add(t);
                   }
 
-                  Tile settings = controlTile(IconView.GEAR, radius, ring, ctlW, tileH);
-                  settings.setOnClickListener(v -> openSettings(Settings.ACTION_SETTINGS));
-                  dock.addView(settings, tileLp(ctlW, tileH, gap));
-                  tiles.add(settings);
-
-                  Tile all = controlTile(IconView.GRID, radius, ring, ctlW, tileH);
-                  all.setOnClickListener(v -> startActivity(new Intent(this, AllAppsActivity.class)));
-                  dock.addView(all, tileLp(ctlW, tileH, gap));
-                  tiles.add(all);
-
-                  Tile plus = controlTile(IconView.PLUS, radius, ring, ctlW, tileH);
-                  plus.setOnClickListener(v -> {
-                      Intent i = new Intent(this, AllAppsActivity.class);
-                      i.putExtra("pick", true);
-                      startActivity(i);
-                  });
-                  dock.addView(plus, tileLp(ctlW, tileH, gap));
-                  tiles.add(plus);
-
+                  if (tiles.isEmpty()) return;
                   int idx = Math.max(0, Math.min(lastIndex, tiles.size() - 1));
                   tiles.get(idx).requestFocus();
                   for (int i = 0; i < tiles.size(); i++) {
@@ -1169,40 +1193,18 @@ jobs:
                       iv.setImageDrawable(e.banner);
                       return iv;
                   }
-                  LinearLayout box = new LinearLayout(this);
-                  box.setOrientation(LinearLayout.VERTICAL);
-                  box.setGravity(Gravity.CENTER);
+                  FrameLayout box = new FrameLayout(this);
                   box.setBackgroundColor(CONTROL_BG);
                   if (e.icon != null) {
                       ImageView iv = new ImageView(this);
                       iv.setImageDrawable(e.icon);
-                      box.addView(iv, new LinearLayout.LayoutParams(px(w * 0.026f), px(w * 0.026f)));
+                      iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      int size = px(w * 0.032f);
+                      box.addView(iv, new FrameLayout.LayoutParams(size, size, Gravity.CENTER));
                   }
-                  TextView t = new TextView(this);
-                  t.setText(e.label);
-                  t.setTextColor(0xFFFFFFFF);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.0085f);
-                  t.setGravity(Gravity.CENTER);
-                  box.addView(t);
                   return box;
               }
 
-              private void askRemove(final Apps.Entry e) {
-                  new AlertDialog.Builder(this)
-                          .setTitle("Remover " + e.label + "?")
-                          .setMessage("O app continua instalado, só sai desta fileira.")
-                          .setPositiveButton("Remover", new DialogInterface.OnClickListener() {
-                              @Override
-                              public void onClick(DialogInterface dialog, int which) {
-                                  List<String> favs = Apps.favorites(HomeActivity.this);
-                                  favs.remove(e.pkg);
-                                  Apps.saveFavorites(HomeActivity.this, favs);
-                                  buildDock();
-                              }
-                          })
-                          .setNegativeButton("Cancelar", null)
-                          .show();
-              }
           }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/AllAppsActivity.java <<'EOF_FILE'
@@ -1492,6 +1494,34 @@ jobs:
                   text(root, "settings put secure accessibility_enabled 1", 14);
 
                   setContentView(sv);
+              }
+
+              @Override
+              public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+                  if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) {
+                          showDock();
+                          return true;
+                      }
+                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
+                          hideDock();
+                          return true;
+                      }
+                  }
+                  return super.dispatchKeyEvent(event);
+              }
+
+              private void showDock() {
+                  dockVisible = true;
+                  dockScroll.setVisibility(View.VISIBLE);
+                  arrowHint.setVisibility(View.GONE);
+                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+              }
+
+              private void hideDock() {
+                  dockVisible = false;
+                  dockScroll.setVisibility(View.GONE);
+                  arrowHint.setVisibility(View.VISIBLE);
               }
 
               @Override
