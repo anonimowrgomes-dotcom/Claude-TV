@@ -432,7 +432,7 @@ jobs:
                   g.setShape(oval ? GradientDrawable.OVAL : GradientDrawable.RECTANGLE);
                   g.setCornerRadius(radius);
                   g.setColor(0x00000000);
-                  g.setStroke(ringPx, 0xFFFFFFFF);
+                  g.setStroke(Math.max(ringPx, 3), 0xFF70A8FF);
                   ring.setBackground(g);
                   ring.setAlpha(0f);
                   addView(ring, new FrameLayout.LayoutParams(
@@ -449,7 +449,8 @@ jobs:
                   float s = gained ? 1.08f : 1f;
                   animate().scaleX(s).scaleY(s).setDuration(130).start();
                   setTranslationZ(gained ? 12f : 0f);
-                  ring.animate().alpha(gained ? 1f : 0f).setDuration(130).start();
+                  ring.setElevation(gained ? 24f : 0f);
+                  ring.animate().alpha(gained ? 1f : 0f).setDuration(100).start();
               }
           }
           EOF_FILE
@@ -758,28 +759,21 @@ jobs:
                   root.setOnClickListener(v -> finish());
 
                   panel = new LinearLayout(this);
-                  panel.setOrientation(LinearLayout.VERTICAL);
-                  panel.setPadding(dp(14), dp(14), dp(14), dp(14));
+                  panel.setOrientation(LinearLayout.HORIZONTAL);
+                  panel.setGravity(Gravity.CENTER);
+                  panel.setPadding(dp(18), dp(12), dp(18), dp(12));
                   GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0xD9111419);
-                  bg.setCornerRadius(dp(28));
-                  bg.setStroke(dp(1), 0x33FFFFFF);
+                  bg.setColor(0x66111419);
+                  bg.setCornerRadius(dp(34));
+                  bg.setStroke(dp(1), 0x332E405A);
                   panel.setBackground(bg);
 
                   FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                          dp(300), ViewGroup.LayoutParams.WRAP_CONTENT,
-                          Gravity.END | Gravity.CENTER_VERTICAL);
-                  lp.rightMargin = dp(28);
+                          ViewGroup.LayoutParams.MATCH_PARENT, dp(112), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  lp.leftMargin = dp(24); lp.rightMargin = dp(24); lp.bottomMargin = dp(22);
                   root.addView(panel, lp);
 
                   TextView caption = new TextView(this);
-                  caption.setText("ATALHOS");
-                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                  caption.setTextColor(0xFF8C95A5);
-                  caption.setLetterSpacing(0.15f);
-                  caption.setPadding(dp(14), dp(6), dp(14), dp(10));
-                  panel.addView(caption);
-
                   row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
@@ -810,16 +804,18 @@ jobs:
               private void focusStyle(View v) {
                   v.setBackground(rowBg(false));
                   v.setOnFocusChangeListener((view, hasFocus) -> {
-                      view.setBackground(rowBg(hasFocus));
-                      float s = hasFocus ? 1.04f : 1f;
-                      view.animate().scaleX(s).scaleY(s).setDuration(120).start();
+                      GradientDrawable d = rowBg(hasFocus);
+                      if (hasFocus) d.setStroke(dp(2), 0xFF68A5FF);
+                      view.setBackground(d);
+                      view.setElevation(hasFocus ? dp(10) : 0);
+                      float sc = hasFocus ? 1.06f : 1f;
+                      view.animate().scaleX(sc).scaleY(sc).setDuration(130).start();
                   });
               }
 
               private void addToPanel(View v) {
-                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  p.bottomMargin = dp(6);
+                  LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+                  p.leftMargin = dp(5); p.rightMargin = dp(5);
                   panel.addView(v, p);
                   if (first == null) first = v;
               }
@@ -834,15 +830,19 @@ jobs:
 
               private void row(int icon, String text, Runnable action) {
                   LinearLayout row = new LinearLayout(this);
-                  row.setOrientation(LinearLayout.HORIZONTAL);
-                  row.setGravity(Gravity.CENTER_VERTICAL);
-                  row.setPadding(dp(16), dp(14), dp(16), dp(14));
+                  row.setOrientation(LinearLayout.VERTICAL);
+                  row.setGravity(Gravity.CENTER);
+                  row.setPadding(dp(4), dp(5), dp(4), dp(5));
 
-                  row.addView(new IconView(this, icon), new LinearLayout.LayoutParams(dp(26), dp(26)));
-                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tp.leftMargin = dp(16);
-                  row.addView(label(text), tp);
+                  FrameLayout bubble = new FrameLayout(this);
+                  GradientDrawable bubbleBg = new GradientDrawable();
+                  bubbleBg.setShape(GradientDrawable.OVAL); bubbleBg.setColor(0x222B3444);
+                  bubbleBg.setStroke(dp(1), 0x333D7BFF); bubble.setBackground(bubbleBg);
+                  bubble.addView(new IconView(this, icon), new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+                  row.addView(bubble, new LinearLayout.LayoutParams(dp(54), dp(54)));
+                  TextView caption = label(text); caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); caption.setGravity(Gravity.CENTER);
+                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  tp.topMargin = dp(4); row.addView(caption, tp);
 
                   row.setFocusable(true);
                   row.setOnClickListener(v -> action.run());
@@ -853,7 +853,8 @@ jobs:
               private void brightnessRow() {
                   LinearLayout box = new LinearLayout(this);
                   box.setOrientation(LinearLayout.VERTICAL);
-                  box.setPadding(dp(16), dp(14), dp(16), dp(16));
+                  box.setGravity(Gravity.CENTER);
+                  box.setPadding(dp(10), dp(8), dp(10), dp(8));
 
                   LinearLayout top = new LinearLayout(this);
                   top.setOrientation(LinearLayout.HORIZONTAL);
@@ -879,20 +880,51 @@ jobs:
                   updateLevel();
 
                   box.setFocusable(true);
+                  box.setOnClickListener(v -> showBrightnessOnly());
                   box.setOnKeyListener((v, keyCode, event) -> {
                       if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-                          setLevel(level - STEP);
-                          return true;
-                      }
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                          setLevel(level + STEP);
-                          return true;
-                      }
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) { showBrightnessOnly(); return true; }
                       return false;
                   });
                   focusStyle(box);
                   addToPanel(box);
+              }
+
+              private void showBrightnessOnly() {
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0x00000000);
+                  LinearLayout control = new LinearLayout(this);
+                  control.setOrientation(LinearLayout.VERTICAL);
+                  control.setGravity(Gravity.CENTER);
+                  control.setPadding(dp(28), dp(18), dp(28), dp(18));
+                  control.setBackgroundColor(0x00000000);
+                  LinearLayout top = new LinearLayout(this);
+                  top.setGravity(Gravity.CENTER_VERTICAL);
+                  top.addView(new IconView(this, IconView.SUN), new LinearLayout.LayoutParams(dp(36), dp(36)));
+                  TextView title = label("Brilho"); title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                  titleLp.leftMargin = dp(14); top.addView(title, titleLp);
+                  TextView percent = label(level + "%"); percent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20); top.addView(percent);
+                  control.addView(top);
+                  BarView brightnessBar = new BarView(this);
+                  LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(420), dp(10)); barLp.topMargin = dp(18);
+                  control.addView(brightnessBar, barLp);
+                  brightnessBar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float)(100 - Prefs.MIN_BRIGHTNESS));
+                  FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  cp.bottomMargin = dp(42); root.addView(control, cp);
+                  setContentView(root);
+                  control.setFocusable(true); control.requestFocus();
+                  control.setOnKeyListener((v, key, ev) -> {
+                      if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                          setLevel(level + (key == KeyEvent.KEYCODE_DPAD_RIGHT ? STEP : -STEP));
+                          percent.setText(level + "%");
+                          brightnessBar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float)(100 - Prefs.MIN_BRIGHTNESS));
+                          return true;
+                      }
+                      if (key == KeyEvent.KEYCODE_BACK || key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) { finish(); return true; }
+                      return false;
+                  });
               }
 
               private void setLevel(int value) {
@@ -1235,9 +1267,16 @@ jobs:
                   int from = indexOfPackage(movingPackage), to = from + delta;
                   if (from < 0 || to < 0 || to >= visibleApps.size()) return;
                   java.util.Collections.swap(visibleApps, from, to); lastIndex = to;
+                  // Move the existing view instead of recreating every app tile on each key repeat.
+                  if (from < dock.getChildCount() && to < dock.getChildCount()) {
+                      View moving = dock.getChildAt(from);
+                      dock.removeViewAt(from);
+                      dock.addView(moving, to);
+                      moving.animate().translationY(-px(h * 0.018f)).scaleX(1.06f).scaleY(1.06f).setDuration(90).start();
+                      moving.requestFocus();
+                  }
                   StringBuilder sb = new StringBuilder(); for (Apps.Entry a : visibleApps) { if (sb.length()>0) sb.append('|'); sb.append(a.pkg); }
                   getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putString("order", sb.toString()).apply();
-                  buildDock();
                   dockScroll.post(() -> dockScroll.smoothScrollTo(Math.max(0, px((w*0.075f + w*0.006f) * Math.max(0, to - 3))), 0));
               }
 
