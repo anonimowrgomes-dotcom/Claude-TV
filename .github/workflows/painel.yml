@@ -1497,34 +1497,6 @@ jobs:
               }
 
               @Override
-              public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-                  if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
-                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) {
-                          showDock();
-                          return true;
-                      }
-                      if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
-                          hideDock();
-                          return true;
-                      }
-                  }
-                  return super.dispatchKeyEvent(event);
-              }
-
-              private void showDock() {
-                  dockVisible = true;
-                  dockScroll.setVisibility(View.VISIBLE);
-                  arrowHint.setVisibility(View.GONE);
-                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
-              }
-
-              private void hideDock() {
-                  dockVisible = false;
-                  dockScroll.setVisibility(View.GONE);
-                  arrowHint.setVisibility(View.VISIBLE);
-              }
-
-              @Override
               protected void onResume() {
                   super.onResume();
                   visible = true;
