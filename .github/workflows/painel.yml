@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 5
-                  versionName '1.4'
+                  versionCode 6
+                  versionName '1.5'
               }
 
               compileOptions {
@@ -1015,7 +1015,12 @@ jobs:
           import android.content.Intent;
           import android.net.Uri;
           import android.content.pm.PackageManager;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.ImageDecoder;
           import android.graphics.Typeface;
+          import android.media.ExifInterface;
+          import android.os.Build;
           import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
           import android.provider.Settings;
@@ -1034,6 +1039,9 @@ jobs:
           import android.widget.TextView;
           import android.widget.Toast;
 
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
           import java.util.ArrayList;
           import java.util.HashMap;
           import java.util.List;
@@ -1061,6 +1069,19 @@ jobs:
               private final List<Apps.Entry> visibleApps = new ArrayList<>();
               private static final int ACCENT_BLUE = 0xFF168CFF;
 
+              // ---- Plano de fundo personalizado ----
+              private static final int REQ_WALLPAPER = 4107;
+              // Philips 65PUG7408/78: painel 4K (3840x2160), proporcao 16:9
+              private static final int TV_W = 3840;
+              private static final int TV_H = 2160;
+              private static final float WALL_ASPECT = 16f / 9f;
+              private static final float WALL_TOLERANCE = 0.015f;
+              private static final int WALL_MIN_W = 1920;
+              private static final int WALL_MIN_H = 1080;
+              private static final int WALL_MAX_W = 7680;
+              private static final int WALL_MAX_H = 4320;
+              private ImageView wallView;
+
               private int px(float v) {
                   return Math.round(v);
               }
@@ -1075,10 +1096,9 @@ jobs:
                   FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(0xFF000000);
 
-                  ImageView wall = new ImageView(this);
-                  wall.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                  wall.setImageResource(R.drawable.wallpaper);
-                  root.addView(wall, new FrameLayout.LayoutParams(
+                  wallView = new ImageView(this);
+                  wallView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  root.addView(wallView, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
                   // relogio no canto superior esquerdo
@@ -1140,6 +1160,7 @@ jobs:
                           px(2), px(2), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
 
                   setContentView(root);
+                  loadWallpaperAtStart();
               }
 
               private FrameLayout.LayoutParams topRight(float d, float right, float top) {
@@ -1307,6 +1328,7 @@ jobs:
                   addMenuButton(box, "◉   Esconder aplicativo", () -> { dialog.dismiss(); hideApp(e); });
                   addMenuButton(box, "▣   Mostrar apps escondidos", () -> { dialog.dismiss(); showHiddenApps(); });
                   addMenuButton(box, "ⓘ   Informações do app", () -> { dialog.dismiss(); openAppInfo(e); });
+                  addMenuButton(box, "▤   Mudar Plano de fundo", () -> { dialog.dismiss(); pickWallpaper(); });
                   addMenuButton(box, "Cancelar", dialog::dismiss);
                   dialog.show();
                   if (dialog.getWindow() != null) {
@@ -1396,6 +1418,213 @@ jobs:
               private void openAppInfo(Apps.Entry e) {
                   try { Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + e.pkg)); startActivity(i); }
                   catch (Exception ex) { Toast.makeText(this, "Informações do aplicativo indisponíveis", Toast.LENGTH_SHORT).show(); }
+              }
+
+              // ================= Plano de fundo personalizado =================
+
+              private File customWallpaperFile() {
+                  return new File(getFilesDir(), "wallpaper_custom");
+              }
+
+              // Tamanho do painel: o maior modo que a TV informa, nunca menor que 3840x2160 (4K da 65PUG7408/78).
+              private int[] panelSize() {
+                  int pw = TV_W;
+                  int ph = TV_H;
+                  try {
+                      android.view.Display d = getWindowManager().getDefaultDisplay();
+                      for (android.view.Display.Mode m : d.getSupportedModes()) {
+                          pw = Math.max(pw, m.getPhysicalWidth());
+                          ph = Math.max(ph, m.getPhysicalHeight());
+                      }
+                  } catch (Exception e) {
+                      // usa o padrao 4K
+                  }
+                  // limite de textura da GPU de TVs
+                  return new int[] { Math.min(pw, 4096), Math.min(ph, 4096) };
+              }
+
+              private void loadWallpaperAtStart() {
+                  final File f = customWallpaperFile();
+                  if (!f.exists()) {
+                      wallView.setImageResource(R.drawable.wallpaper);
+                      return;
+                  }
+                  new Thread(() -> {
+                      final Bitmap b = decodeWallpaper(f);
+                      runOnUiThread(() -> {
+                          if (isDestroyed()) return;
+                          if (b != null) wallView.setImageBitmap(b);
+                          else wallView.setImageResource(R.drawable.wallpaper);
+                      });
+                  }).start();
+              }
+
+              // Decodifica sem perder qualidade: so reduz quando a imagem e maior que o painel (4K),
+              // porque acima disso a TV nao mostra mais detalhe e a memoria nao aguenta 8K inteiro.
+              private Bitmap decodeWallpaper(File f) {
+                  final int[] panel = panelSize();
+                  try {
+                      if (Build.VERSION.SDK_INT >= 28) {
+                          final int pw = panel[0];
+                          return ImageDecoder.decodeBitmap(ImageDecoder.createSource(f), (decoder, info, src) -> {
+                              int iw = info.getSize().getWidth();
+                              int ih = info.getSize().getHeight();
+                              if (iw > pw) {
+                                  decoder.setTargetSize(pw, Math.max(1, Math.round((float) ih * pw / iw)));
+                              }
+                          });
+                      }
+                      BitmapFactory.Options bounds = new BitmapFactory.Options();
+                      bounds.inJustDecodeBounds = true;
+                      BitmapFactory.decodeFile(f.getAbsolutePath(), bounds);
+                      int sample = 1;
+                      while (bounds.outWidth / (sample * 2) >= panel[0]) sample *= 2;
+                      BitmapFactory.Options o = new BitmapFactory.Options();
+                      o.inSampleSize = sample;
+                      return BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+                  } catch (Throwable t) {
+                      return null;
+                  }
+              }
+
+              private void pickWallpaper() {
+                  Toast.makeText(this, "Escolha uma imagem 16:9, de 1920x1080 até 7680x4320", Toast.LENGTH_LONG).show();
+                  Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  open.addCategory(Intent.CATEGORY_OPENABLE);
+                  open.setType("image/*");
+                  try {
+                      startActivityForResult(open, REQ_WALLPAPER);
+                      return;
+                  } catch (Exception e) {
+                      // tenta o seletor alternativo
+                  }
+                  Intent get = new Intent(Intent.ACTION_GET_CONTENT);
+                  get.addCategory(Intent.CATEGORY_OPENABLE);
+                  get.setType("image/*");
+                  try {
+                      startActivityForResult(get, REQ_WALLPAPER);
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Esta TV não tem um seletor de arquivos instalado", Toast.LENGTH_LONG).show();
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == REQ_WALLPAPER && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      importWallpaper(data.getData());
+                  }
+              }
+
+              private void importWallpaper(final Uri uri) {
+                  Toast.makeText(this, "Aplicando plano de fundo…", Toast.LENGTH_SHORT).show();
+                  new Thread(() -> {
+                      final File tmp = new File(getFilesDir(), "wallpaper_tmp");
+                      final String error = importWallpaperSync(uri, tmp);
+                      final Bitmap bmp = error == null ? decodeWallpaper(tmp) : null;
+                      if (error == null && bmp != null) {
+                          File dst = customWallpaperFile();
+                          if (dst.exists()) dst.delete();
+                          tmp.renameTo(dst);
+                      } else {
+                          tmp.delete();
+                      }
+                      runOnUiThread(() -> {
+                          if (error != null) {
+                              showWallpaperError(error);
+                          } else if (bmp == null) {
+                              showWallpaperError("Não foi possível abrir essa imagem.");
+                          } else {
+                              wallView.setImageBitmap(bmp);
+                              Toast.makeText(this, "Plano de fundo alterado", Toast.LENGTH_SHORT).show();
+                          }
+                      });
+                  }).start();
+              }
+
+              // Valida o tamanho e copia o arquivo original, byte a byte (sem recomprimir), para a pasta do app.
+              // Retorna null se deu certo, ou o texto do erro.
+              private String importWallpaperSync(Uri uri, File tmp) {
+                  try {
+                      BitmapFactory.Options o = new BitmapFactory.Options();
+                      o.inJustDecodeBounds = true;
+                      try (InputStream in = getContentResolver().openInputStream(uri)) {
+                          if (in == null) return "Não foi possível abrir o arquivo.";
+                          BitmapFactory.decodeStream(in, null, o);
+                      }
+                      int iw = o.outWidth;
+                      int ih = o.outHeight;
+                      if (iw <= 0 || ih <= 0) return "Esse arquivo não é uma imagem válida.";
+
+                      // fotos giradas (EXIF) trocam largura e altura
+                      try (InputStream in = getContentResolver().openInputStream(uri)) {
+                          if (in != null) {
+                              int ori = new ExifInterface(in).getAttributeInt(
+                                      ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                              if (ori == 5 || ori == 6 || ori == 7 || ori == 8) {
+                                  int t = iw;
+                                  iw = ih;
+                                  ih = t;
+                              }
+                          }
+                      } catch (Exception ignore) {
+                          // sem EXIF: segue normal
+                      }
+
+                      String dims = iw + "x" + ih;
+                      float ratio = (float) iw / (float) ih;
+                      if (Math.abs(ratio / WALL_ASPECT - 1f) > WALL_TOLERANCE) {
+                          return "A imagem tem " + dims + " e não está na proporção 16:9 da TV. "
+                                  + "Use, por exemplo, 1920x1080, 3840x2160 ou 7680x4320.";
+                      }
+                      if (iw < WALL_MIN_W || ih < WALL_MIN_H) {
+                          return "A imagem (" + dims + ") é pequena demais e ficaria borrada. O mínimo é "
+                                  + WALL_MIN_W + "x" + WALL_MIN_H + ".";
+                      }
+                      if (iw > WALL_MAX_W || ih > WALL_MAX_H) {
+                          return "A imagem (" + dims + ") é grande demais. O máximo é "
+                                  + WALL_MAX_W + "x" + WALL_MAX_H + " (8K).";
+                      }
+
+                      try (InputStream in = getContentResolver().openInputStream(uri);
+                           FileOutputStream out = new FileOutputStream(tmp)) {
+                          if (in == null) return "Não foi possível abrir o arquivo.";
+                          byte[] buf = new byte[1 << 16];
+                          int n;
+                          while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                      }
+                      return null;
+                  } catch (Exception e) {
+                      return "Falha ao ler a imagem.";
+                  }
+              }
+
+              private void showWallpaperError(String msg) {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(px(w*0.018f), px(h*0.018f), px(w*0.018f), px(h*0.012f));
+                  box.setBackgroundColor(0xFF10141C);
+                  TextView title = new TextView(this);
+                  title.setText("Imagem não aceita");
+                  title.setTextColor(0xFFFFFFFF);
+                  title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  title.setPadding(0, 0, 0, px(h*0.012f));
+                  box.addView(title);
+                  TextView body = new TextView(this);
+                  body.setText(msg);
+                  body.setTextColor(0xFFCCCCCC);
+                  body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  body.setPadding(0, 0, 0, px(h*0.014f));
+                  box.addView(body);
+                  AlertDialog dialog = new AlertDialog.Builder(this).setView(box).create();
+                  addMenuButton(box, "Escolher outra imagem", () -> { dialog.dismiss(); pickWallpaper(); });
+                  addMenuButton(box, "Fechar", dialog::dismiss);
+                  dialog.show();
+                  if (dialog.getWindow() != null) {
+                      dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                      dialog.getWindow().setLayout((int)(w*0.42f), ViewGroup.LayoutParams.WRAP_CONTENT);
+                  }
               }
 
               private LinearLayout.LayoutParams tileLp(float tw, float th, int gap) {
