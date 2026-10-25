@@ -1011,31 +1011,23 @@ jobs:
                   float gap = w * 0.0102f;
                   float right = w * 0.0150f;
                   float top = h * 0.0245f;
-                  root.addView(circleButton(IconView.GEAR, d, () -> openSettings(Settings.ACTION_SETTINGS)),
-                          topRight(d, right, top));
+                  root.addView(circleButton(IconView.GEAR, d, () -> {
+                      try { startActivity(new Intent(this, PanelActivity.class)); }
+                      catch (Exception ignored) { openSettings(Settings.ACTION_SETTINGS); }
+                  }), topRight(d, right, top));
                   Tile wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
-                  FrameLayout wifiWrap = new FrameLayout(this);
-                  wifiWrap.addView(wifiButton, new FrameLayout.LayoutParams(-1, -1));
-                  TextView lockBadge = new TextView(this);
-                  lockBadge.setText("▣");
-                  lockBadge.setTextColor(0xFFFFFFFF);
-                  lockBadge.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.010f);
-                  lockBadge.setGravity(Gravity.CENTER);
-                  lockBadge.setBackgroundColor(0xFF202329);
-                  FrameLayout.LayoutParams lockLp = new FrameLayout.LayoutParams(px(d * 0.30f), px(d * 0.30f), Gravity.BOTTOM | Gravity.END);
-                  wifiWrap.addView(lockBadge, lockLp);
-                  wifiWrap.setOnClickListener(v -> openSettings(Settings.ACTION_WIFI_SETTINGS));
-                  root.addView(wifiWrap, topRight(d, right + d + gap, top));
+                  // Ícone Wi-Fi limpo, sem selo/cadeado sobreposto.
+                  root.addView(wifiButton, topRight(d, right + d + gap, top));
 
                   // Indicador discreto: pressione para baixo para revelar os aplicativos.
                   arrowHint = new TextView(this);
-                  arrowHint.setText("⌃");
+                  arrowHint.setText("˄");
                   arrowHint.setTextColor(0x66FFFFFF);
-                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.038f);
+                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.026f);
                   arrowHint.setGravity(Gravity.CENTER);
                   arrowHint.setFocusable(false);
                   FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(
-                          px(w * 0.09f), px(h * 0.065f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                          px(w * 0.06f), px(h * 0.035f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
                   al.bottomMargin = px(h * 0.002f);
                   root.addView(arrowHint, al);
 
