@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 8
-                  versionName '1.7'
+                  versionCode 9
+                  versionName '1.8'
               }
 
               compileOptions {
@@ -412,65 +412,331 @@ jobs:
               }
           }
           EOF_FILE
-          cat > painel/app/src/main/java/com/painel/lateral/Tile.java <<'EOF_FILE'
+          cat > painel/app/src/main/java/com/painel/lateral/ReflectRow.java <<'EOF_FILE'
           package com.painel.lateral;
 
           import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.LinearGradient;
+          import android.graphics.Matrix;
+          import android.graphics.Paint;
+          import android.graphics.PorterDuff;
+          import android.graphics.PorterDuffXfermode;
+          import android.graphics.Shader;
+          import android.view.View;
+          import android.widget.LinearLayout;
+
+          // Fileira de blocos com reflexo de piso em tempo real: o reflexo e o proprio bloco desenhado
+          // de cabeca para baixo a cada quadro, entao acompanha zoom, brilho e a rolagem para o lado.
+          final class ReflectRow extends LinearLayout {
+              private final int reflectPx;
+              private final int gapPx;
+              private final Paint fade = new Paint();
+              private final Matrix m = new Matrix();
+              private final Shader shader;
+
+              ReflectRow(Context c, int reflectPx, int gapPx) {
+                  super(c);
+                  this.reflectPx = reflectPx;
+                  this.gapPx = gapPx;
+                  setOrientation(HORIZONTAL);
+                  setClipChildren(false);
+                  setClipToPadding(false);
+                  setPadding(0, 0, 0, reflectPx);
+                  int band = Math.max(1, reflectPx - gapPx);
+                  shader = new LinearGradient(0f, 0f, 0f, band,
+                          new int[] { 0x80000000, 0x30000000, 0x00000000 },
+                          new float[] { 0f, 0.45f, 1f }, Shader.TileMode.CLAMP);
+                  fade.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
+              }
+
+              @Override
+              protected void dispatchDraw(Canvas canvas) {
+                  super.dispatchDraw(canvas);
+                  int band = reflectPx - gapPx;
+                  if (band <= 0) return;
+                  long t = getDrawingTime();
+                  for (int i = 0; i < getChildCount(); i++) {
+                      View ch = getChildAt(i);
+                      if (ch.getVisibility() != VISIBLE) continue;
+                      // base visual do bloco (considera zoom e deslocamento)
+                      float axis = ch.getBottom() + ch.getTranslationY()
+                              + ch.getHeight() * (ch.getScaleY() - 1f) / 2f;
+                      float pad = ch.getWidth() * 0.15f;
+                      float l = ch.getLeft() + ch.getTranslationX() - pad;
+                      float r = ch.getRight() + ch.getTranslationX() + pad;
+                      float top = axis + gapPx;
+                      int save = canvas.saveLayer(l, top, r, top + band, null);
+                      canvas.save();
+                      canvas.translate(0f, gapPx);
+                      canvas.scale(1f, -1f, 0f, axis);
+                      drawChild(canvas, ch, t);
+                      canvas.restore();
+                      m.setTranslate(0f, top);
+                      shader.setLocalMatrix(m);
+                      fade.setShader(shader);
+                      canvas.drawRect(l, top, r, top + band, fade);
+                      canvas.restoreToCount(save);
+                  }
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/Tile.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.animation.ValueAnimator;
+          import android.content.Context;
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
           import android.graphics.Outline;
+          import android.graphics.Paint;
           import android.graphics.Rect;
+          import android.graphics.RectF;
+          import android.graphics.Shader;
+          import android.graphics.SweepGradient;
+          import android.graphics.drawable.Drawable;
           import android.graphics.drawable.GradientDrawable;
+          import android.view.Gravity;
           import android.view.View;
           import android.view.ViewGroup;
           import android.view.ViewOutlineProvider;
           import android.widget.FrameLayout;
+          import android.widget.ImageView;
 
-          // Bloco focavel com cantos arredondados, anel branco e leve zoom ao receber foco.
+          // Bloco focavel no estilo neon: borda fina colorida, brilho de vidro e, ao selecionar,
+          // anel azul LED com brilho em volta e leve zoom.
           final class Tile extends FrameLayout {
-              private final View ring;
-              private final boolean oval;
-              private final float radius;
+              static final int LED = 0xFF2D8CFF;
+
+              private final FrameLayout holder;
+              private final Neon neon;
+              private ValueAnimator focusAnim;
 
               Tile(Context c, boolean oval, float radius, int ringPx) {
                   super(c);
-                  this.oval = oval;
-                  this.radius = radius;
                   setFocusable(true);
                   setClickable(true);
-                  setClipToOutline(true);
-                  setOutlineProvider(new ViewOutlineProvider() {
+                  setClipChildren(false);
+                  setClipToPadding(false);
+                  final boolean isOval = oval;
+                  final float r = radius;
+                  holder = new FrameLayout(c);
+                  holder.setClipToOutline(true);
+                  holder.setOutlineProvider(new ViewOutlineProvider() {
                       @Override
                       public void getOutline(View v, Outline o) {
-                          if (Tile.this.oval) {
+                          if (isOval) {
                               o.setOval(0, 0, v.getWidth(), v.getHeight());
                           } else {
-                              o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), Tile.this.radius);
+                              o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), r);
                           }
                       }
                   });
-                  ring = new View(c);
-                  GradientDrawable g = new GradientDrawable();
-                  g.setShape(oval ? GradientDrawable.OVAL : GradientDrawable.RECTANGLE);
-                  g.setCornerRadius(radius);
-                  g.setColor(0x00000000);
-                  g.setStroke(Math.max(ringPx, 3), 0xFF70A8FF);
-                  ring.setBackground(g);
-                  ring.setAlpha(0f);
-                  addView(ring, new FrameLayout.LayoutParams(
+                  super.addView(holder, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  neon = new Neon(c, oval, radius, Math.max(ringPx, 3));
+                  super.addView(neon, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
               }
 
+              // Fundo do bloco fica dentro do recorte arredondado.
+              @Override
+              public void setBackground(Drawable d) {
+                  if (holder != null) holder.setBackground(d);
+                  else super.setBackground(d);
+              }
+
               void setContent(View v, FrameLayout.LayoutParams lp) {
-                  addView(v, 0, lp);
+                  holder.addView(v, lp);
+              }
+
+              void setNeon(int color) {
+                  neon.setColors(color, 0);
+              }
+
+              void setNeon(int color, int color2) {
+                  neon.setColors(color, color2);
               }
 
               @Override
               protected void onFocusChanged(boolean gained, int direction, Rect previouslyFocusedRect) {
                   super.onFocusChanged(gained, direction, previouslyFocusedRect);
                   float s = gained ? 1.08f : 1f;
-                  animate().scaleX(s).scaleY(s).setDuration(130).start();
+                  animate().scaleX(s).scaleY(s).setDuration(140).start();
                   setTranslationZ(gained ? 12f : 0f);
-                  ring.setElevation(gained ? 24f : 0f);
-                  ring.animate().alpha(gained ? 1f : 0f).setDuration(100).start();
+                  if (focusAnim != null) focusAnim.cancel();
+                  focusAnim = ValueAnimator.ofFloat(neon.focus, gained ? 1f : 0f);
+                  focusAnim.setDuration(150);
+                  focusAnim.addUpdateListener(a -> neon.setFocus((Float) a.getAnimatedValue()));
+                  focusAnim.start();
+              }
+
+              // Bloco de aplicativo no tema neon (usado na tela inicial e no painel).
+              static Tile forApp(Context c, Apps.Entry e, float radius, int ringPx, int iconPx) {
+                  Tile t = new Tile(c, false, radius, ringPx);
+                  View content;
+                  if (e.banner != null) {
+                      ImageView iv = new ImageView(c);
+                      iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                      iv.setImageDrawable(e.banner);
+                      content = iv;
+                  } else {
+                      FrameLayout box = new FrameLayout(c);
+                      box.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                              new int[] { 0xFF252A33, 0xFF11141A }));
+                      if (e.icon != null) {
+                          ImageView iv = new ImageView(c);
+                          iv.setImageDrawable(e.icon);
+                          iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                          box.addView(iv, new FrameLayout.LayoutParams(iconPx, iconPx, Gravity.CENTER));
+                      }
+                      content = box;
+                  }
+                  t.setContent(content, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  View gloss = new View(c);
+                  gloss.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                          new int[] { 0x30FFFFFF, 0x00FFFFFF }));
+                  t.setContent(gloss, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  t.setContentDescription(e.label);
+                  t.setNeon(neonColor(e.banner != null ? e.banner : e.icon));
+                  return t;
+              }
+
+              // Cor da borda: a cor predominante da arte do app, no maximo de brilho.
+              static int neonColor(Drawable d) {
+                  final int fallback = 0xFF8A6CFF;
+                  if (d == null) return fallback;
+                  try {
+                      final int n = 16;
+                      Bitmap b = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888);
+                      Canvas cv = new Canvas(b);
+                      Rect old = d.copyBounds();
+                      d.setBounds(0, 0, n, n);
+                      d.draw(cv);
+                      d.setBounds(old);
+                      float[] hsv = new float[3];
+                      float sr = 0f, sg = 0f, sb = 0f, sw = 0f;
+                      for (int y = 0; y < n; y++) {
+                          for (int x = 0; x < n; x++) {
+                              int p = b.getPixel(x, y);
+                              if (Color.alpha(p) < 128) continue;
+                              Color.colorToHSV(p, hsv);
+                              float wgt = hsv[1] * hsv[2];
+                              wgt *= wgt;
+                              sr += Color.red(p) * wgt;
+                              sg += Color.green(p) * wgt;
+                              sb += Color.blue(p) * wgt;
+                              sw += wgt;
+                          }
+                      }
+                      b.recycle();
+                      if (sw < 0.5f) return fallback;
+                      Color.RGBToHSV((int) (sr / sw), (int) (sg / sw), (int) (sb / sw), hsv);
+                      hsv[1] = Math.max(hsv[1], 0.55f);
+                      hsv[2] = 1f;
+                      return Color.HSVToColor(hsv);
+                  } catch (Throwable ex) {
+                      return fallback;
+                  }
+              }
+
+              // Desenha a borda neon fina e, com foco, o anel LED com brilho para fora.
+              private static final class Neon extends View {
+                  private final boolean oval;
+                  private final float radius;
+                  private final int ringPx;
+                  private final float idleW;
+                  private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+                  private final RectF r = new RectF();
+                  private int idle = 0xFF8A6CFF;
+                  private int idle2 = 0;
+                  private Shader sweep;
+                  float focus = 0f;
+
+                  Neon(Context c, boolean oval, float radius, int ringPx) {
+                      super(c);
+                      this.oval = oval;
+                      this.radius = radius;
+                      this.ringPx = ringPx;
+                      this.idleW = Math.max(2f, ringPx * 0.45f);
+                      p.setStyle(Paint.Style.STROKE);
+                      setWillNotDraw(false);
+                  }
+
+                  void setColors(int c1, int c2) {
+                      idle = c1;
+                      idle2 = c2;
+                      rebuildShader();
+                      invalidate();
+                  }
+
+                  void setFocus(float f) {
+                      focus = f;
+                      invalidate();
+                  }
+
+                  private void rebuildShader() {
+                      if (idle2 != 0 && getWidth() > 0) {
+                          sweep = new SweepGradient(getWidth() / 2f, getHeight() / 2f,
+                                  new int[] { idle, idle2, idle }, null);
+                      } else {
+                          sweep = null;
+                      }
+                  }
+
+                  @Override
+                  protected void onSizeChanged(int w, int h, int ow, int oh) {
+                      super.onSizeChanged(w, h, ow, oh);
+                      rebuildShader();
+                  }
+
+                  private void shape(Canvas c, float rad) {
+                      if (oval) c.drawOval(r, p);
+                      else c.drawRoundRect(r, rad, rad, p);
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      float w = getWidth();
+                      float h = getHeight();
+
+                      // borda neon fina
+                      p.setStrokeWidth(idleW);
+                      p.setShader(sweep);
+                      p.setColor(idle);
+                      p.setAlpha((int) (225 * (1f - focus)));
+                      r.set(idleW / 2f, idleW / 2f, w - idleW / 2f, h - idleW / 2f);
+                      shape(c, Math.max(0f, radius - idleW / 2f));
+                      p.setShader(null);
+                      if (focus <= 0.01f) return;
+
+                      // brilho LED: aneis para fora, cada vez mais fracos
+                      final int n = 6;
+                      float step = Math.max(2f, ringPx * 0.4f);
+                      p.setStrokeWidth(step + 0.6f);
+                      p.setColor(LED);
+                      for (int i = n; i >= 1; i--) {
+                          float e = (i - 0.5f) * step;
+                          float k = 1f - (i - 1f) / n;
+                          p.setAlpha((int) (255 * 0.42f * focus * k * k));
+                          r.set(-e, -e, w + e, h + e);
+                          shape(c, radius + e);
+                      }
+
+                      // anel LED + fio de luz por dentro
+                      p.setStrokeWidth(ringPx);
+                      p.setColor(LED);
+                      p.setAlpha((int) (255 * focus));
+                      r.set(ringPx / 2f, ringPx / 2f, w - ringPx / 2f, h - ringPx / 2f);
+                      shape(c, Math.max(0f, radius - ringPx / 2f));
+                      p.setStrokeWidth(Math.max(1f, ringPx * 0.35f));
+                      p.setColor(0xFFCFE6FF);
+                      p.setAlpha((int) (210 * focus));
+                      shape(c, Math.max(0f, radius - ringPx / 2f));
+                  }
               }
           }
           EOF_FILE
@@ -1047,8 +1313,8 @@ jobs:
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
                   row(IconView.GRID, "Aplicativos", this::showAppsBar);
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
-                  row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
                   row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
+                  row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
 
                   panelScroll.setAlpha(0f);
                   panelScroll.setTranslationX(dp(40));
@@ -1322,23 +1588,31 @@ jobs:
                   }
                   FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(0x00000000);
+                  root.setClipChildren(false);
                   root.setOnClickListener(v -> finish());
 
-                  // Mesmas proporcoes dos blocos da tela inicial: 6 por tela, sem fundo.
+                  // Mesmo tema da tela inicial: blocos neon com reflexo, 6 por tela, sem fundo.
                   float sw = getResources().getDisplayMetrics().widthPixels;
                   int gap = (int) (sw * 0.006f);
                   int tileW = (int) ((sw - sw * 0.024f - gap * 5) / 6f);
                   int tileH = (int) (sw * 0.075f);
-                  float radius = sw * 0.0072f;
+                  float radius = sw * 0.0095f;
                   int ring = (int) (sw * 0.0018f) + 2;
+                  int reflectPx = (int) (tileH * 0.55f);
+                  int padH = (int) (sw * 0.012f);
+                  int padV = (int) (sw * 0.012f);
 
-                  LinearLayout strip = new LinearLayout(this);
-                  strip.setOrientation(LinearLayout.HORIZONTAL);
+                  ReflectRow strip = new ReflectRow(this, reflectPx, (int) (tileH * 0.04f));
                   strip.setGravity(Gravity.CENTER);
-                  strip.setPadding((int) (sw * 0.012f), dp(18), (int) (sw * 0.012f), dp(18));
+                  strip.setPadding(padH, padV, padH, reflectPx);
                   View firstItem = null;
                   for (Apps.Entry e : list) {
-                      Tile t = appTile(e, radius, ring);
+                      Tile t = Tile.forApp(this, e, radius, ring, (int) (sw * 0.032f));
+                      t.setOnClickListener(v -> v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(90)
+                              .withEndAction(() -> {
+                                  Apps.launch(this, e);
+                                  finish();
+                              }).start());
                       LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(tileW, tileH);
                       ip.leftMargin = gap / 2; ip.rightMargin = gap / 2;
                       strip.addView(t, ip);
@@ -1349,45 +1623,16 @@ jobs:
                   scroll.setHorizontalScrollBarEnabled(false);
                   scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
                   scroll.setFillViewport(true);
+                  scroll.setClipChildren(false);
+                  scroll.setClipToPadding(false);
                   scroll.addView(strip, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                   FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
-                  sp.bottomMargin = dp(22);
+                  sp.bottomMargin = dp(10);
                   root.addView(scroll, sp);
                   setContentView(root);
                   firstItem.requestFocus();
-              }
-
-              // Mesmo visual da tela inicial: banner do app com cantos arredondados, anel azul e zoom no foco.
-              private Tile appTile(final Apps.Entry e, float radius, int ring) {
-                  Tile t = new Tile(this, false, radius, ring);
-                  View content;
-                  if (e.banner != null) {
-                      ImageView iv = new ImageView(this);
-                      iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                      iv.setImageDrawable(e.banner);
-                      content = iv;
-                  } else {
-                      FrameLayout box = new FrameLayout(this);
-                      box.setBackgroundColor(CONTROL_BG);
-                      if (e.icon != null) {
-                          ImageView iv = new ImageView(this);
-                          iv.setImageDrawable(e.icon);
-                          iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                          box.addView(iv, new FrameLayout.LayoutParams(dp(56), dp(56), Gravity.CENTER));
-                      }
-                      content = box;
-                  }
-                  t.setContent(content, new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                  t.setContentDescription(e.label);
-                  t.setOnClickListener(v -> v.animate().scaleX(0.92f).scaleY(0.92f).setDuration(90)
-                          .withEndAction(() -> {
-                              Apps.launch(this, e);
-                              finish();
-                          }).start());
-                  return t;
               }
 
               // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
@@ -1522,6 +1767,7 @@ jobs:
                   float clockPx = w * 0.0215f;
                   clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, clockPx);
                   clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                  clock.setShadowLayer(w * 0.006f, 0f, 0f, 0xCC6FA8FF);
                   FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.TOP | Gravity.START);
@@ -1552,16 +1798,15 @@ jobs:
                   int padH = px(w * 0.012f);
                   dockPadH = padH;
                   dockScroll.setPadding(padH, padV, padH, padV);
-                  dock = new LinearLayout(this);
-                  dock.setOrientation(LinearLayout.HORIZONTAL);
-                  dock.setClipChildren(false);
+                  float tileH = w * 0.075f;
+                  final int reflectPx = px(tileH * 0.55f);
+                  dock = new ReflectRow(this, reflectPx, px(tileH * 0.04f));
                   dockScroll.addView(dock, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                  float tileH = w * 0.075f;
                   FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + padV * 2,
+                          ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + reflectPx + padV * 2,
                           Gravity.BOTTOM);
-                  sl.bottomMargin = px(h * 0.035f - padV);
+                  sl.bottomMargin = px(h * 0.012f);
                   dockScroll.setVisibility(View.GONE);
                   root.addView(dockScroll, sl);
 
@@ -1588,8 +1833,9 @@ jobs:
                   Tile t = new Tile(this, true, d / 2f, px(w * 0.0014f) + 2);
                   GradientDrawable bg = new GradientDrawable();
                   bg.setShape(GradientDrawable.OVAL);
-                  bg.setColor(0xCC1C1E22);
+                  bg.setColor(0xE60E1016);
                   t.setBackground(bg);
+                  t.setNeon(0xFF9A5CFF, 0xFF2D8CFF);
                   IconView iv = new IconView(this, icon);
                   int s = px(d * 0.5f);
                   t.setContent(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
@@ -1684,7 +1930,7 @@ jobs:
                   int gap = px(w * 0.006f);
                   tileWpx = px(appW);
                   gapPx = gap;
-                  float radius = w * 0.0072f;
+                  float radius = w * 0.0095f;
                   int ring = px(w * 0.0018f) + 2;
                   android.content.SharedPreferences prefs = getSharedPreferences("launcher_apps", MODE_PRIVATE);
                   java.util.Set<String> hidden = new java.util.HashSet<>(prefs.getStringSet("hidden", new java.util.HashSet<>()));
@@ -1701,8 +1947,7 @@ jobs:
                   visibleApps.addAll(ordered);
                   for (int i = 0; i < ordered.size(); i++) {
                       final Apps.Entry e = ordered.get(i);
-                      Tile t = new Tile(this, false, radius, ring);
-                      t.setContent(appContent(e), new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                      Tile t = Tile.forApp(this, e, radius, ring, px(w * 0.032f));
                       t.setOnClickListener(v -> { if (!moveMode) Apps.launch(this, e); });
                       t.setLongClickable(true);
                       t.setOnLongClickListener(v -> { showAppMenu(e); return true; });
