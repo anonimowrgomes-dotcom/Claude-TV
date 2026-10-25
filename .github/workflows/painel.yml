@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 6
-                  versionName '1.5'
+                  versionCode 7
+                  versionName '1.6'
               }
 
               compileOptions {
@@ -252,6 +252,7 @@ jobs:
           import android.content.Context;
           import android.graphics.Canvas;
           import android.graphics.Paint;
+          import android.graphics.Path;
           import android.graphics.RectF;
           import android.view.View;
 
@@ -263,6 +264,7 @@ jobs:
               static final int SUN = 4;
               static final int GRID = 5;
               static final int PLUS = 6;
+              static final int VOLUME = 7;
 
               private final int type;
               private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -323,6 +325,24 @@ jobs:
                           p.setStrokeWidth(2.6f * u);
                           c.drawLine(cx - 8f * u, cy, cx + 8f * u, cy, p);
                           c.drawLine(cx, cy - 8f * u, cx, cy + 8f * u, p);
+                          break;
+                      }
+                      case VOLUME: {
+                          p.setStrokeJoin(Paint.Join.ROUND);
+                          Path sp = new Path();
+                          sp.moveTo(cx - 9f * u, cy - 3.5f * u);
+                          sp.lineTo(cx - 5f * u, cy - 3.5f * u);
+                          sp.lineTo(cx, cy - 8f * u);
+                          sp.lineTo(cx, cy + 8f * u);
+                          sp.lineTo(cx - 5f * u, cy + 3.5f * u);
+                          sp.lineTo(cx - 9f * u, cy + 3.5f * u);
+                          sp.close();
+                          c.drawPath(sp, p);
+                          for (int i = 1; i <= 2; i++) {
+                              float rad = (3f + i * 3.2f) * u;
+                              r.set(cx + 1f * u - rad, cy - rad, cx + 1f * u + rad, cy + rad);
+                              c.drawArc(r, -45f, 90f, false, p);
+                          }
                           break;
                       }
                       case SUN: {
@@ -634,46 +654,132 @@ jobs:
               }
           }
           EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/Screensaver.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.content.Intent;
+
+          final class Screensaver {
+              private Screensaver() { }
+
+              // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
+              // O caminho que funciona e a acao SLEEP das Configuracoes da TV (a mesma do botao do painel).
+              static boolean start(Context c) {
+                  Intent i = new Intent("com.google.android.pano.action.SLEEP");
+                  i.setClassName("com.android.tv.settings",
+                          "com.android.tv.settings.device.display.daydream.DaydreamVoiceAction");
+                  if (tryStart(c, i)) return true;
+                  return tryStart(c, new Intent("com.google.android.pano.action.SLEEP"));
+              }
+
+              private static boolean tryStart(Context c, Intent i) {
+                  i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  try {
+                      c.startActivity(i);
+                      return true;
+                  } catch (Exception e) {
+                      return false;
+                  }
+              }
+          }
+          EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/PanelService.java <<'EOF_FILE'
           package com.painel.lateral;
 
           import android.accessibilityservice.AccessibilityService;
+          import android.content.BroadcastReceiver;
           import android.content.Context;
           import android.content.Intent;
+          import android.content.IntentFilter;
           import android.graphics.PixelFormat;
+          import android.media.AudioManager;
+          import android.media.AudioPlaybackConfiguration;
+          import android.media.tv.TvInputInfo;
+          import android.media.tv.TvInputManager;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.PowerManager;
+          import android.os.SystemClock;
           import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.view.WindowManager;
           import android.view.accessibility.AccessibilityEvent;
 
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Set;
+
           public class PanelService extends AccessibilityService {
               static PanelService instance;
 
               private View dimView;
+
+              // ---- Protetor de tela automatico ----
+              private static final long IDLE_MS = 5 * 60 * 1000L;   // 5 minutos parado
+              private static final long CHECK_MS = 15 * 1000L;      // confere a cada 15 segundos
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private long lastActivity = SystemClock.elapsedRealtime();
+              private boolean dreaming;
+              private boolean receiverOn;
+              private String fgPackage = "";
+
+              private final Runnable idleCheck = new Runnable() {
+                  @Override
+                  public void run() {
+                      checkIdle();
+                      handler.postDelayed(this, CHECK_MS);
+                  }
+              };
+
+              private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      noteActivity();
+                  }
+              };
 
               @Override
               protected void onServiceConnected() {
                   super.onServiceConnected();
                   instance = this;
                   applyBrightness(Prefs.brightness(this));
+                  startIdleWatcher();
               }
 
               @Override
               public boolean onUnbind(Intent intent) {
                   instance = null;
+                  stopIdleWatcher();
                   removeDim();
                   return super.onUnbind(intent);
               }
 
               @Override
               public void onDestroy() {
+                  stopIdleWatcher();
                   removeDim();
                   super.onDestroy();
               }
 
               @Override
-              public void onAccessibilityEvent(AccessibilityEvent event) { }
+              public void onAccessibilityEvent(AccessibilityEvent event) {
+                  if (event == null || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
+                  // Enquanto o protetor roda, so tecla ou a tela ligar/desligar "acorda" o controle.
+                  if (dreaming) return;
+                  String cls = event.getClassName() == null ? "" : event.getClassName().toString();
+                  String pkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
+                  if (cls.contains("Dream")) {
+                      dreaming = true;
+                      return;
+                  }
+                  // O proprio painel e a interface do sistema nao contam como "o app em uso".
+                  if (pkg.equals(getPackageName()) && cls.endsWith("PanelActivity")) return;
+                  if (pkg.equals("com.android.systemui") || pkg.equals("android") || pkg.isEmpty()) return;
+                  fgPackage = pkg;
+                  lastActivity = SystemClock.elapsedRealtime();
+              }
 
               @Override
               public void onInterrupt() { }
@@ -709,6 +815,103 @@ jobs:
                   }
               }
 
+              private void noteActivity() {
+                  lastActivity = SystemClock.elapsedRealtime();
+                  dreaming = false;
+              }
+
+              private void startIdleWatcher() {
+                  noteActivity();
+                  if (!receiverOn) {
+                      IntentFilter f = new IntentFilter();
+                      f.addAction(Intent.ACTION_SCREEN_ON);
+                      f.addAction(Intent.ACTION_SCREEN_OFF);
+                      try {
+                          registerReceiver(screenReceiver, f);
+                          receiverOn = true;
+                      } catch (Exception e) {
+                          receiverOn = false;
+                      }
+                  }
+                  handler.removeCallbacks(idleCheck);
+                  handler.postDelayed(idleCheck, CHECK_MS);
+              }
+
+              private void stopIdleWatcher() {
+                  handler.removeCallbacks(idleCheck);
+                  if (receiverOn) {
+                      try {
+                          unregisterReceiver(screenReceiver);
+                      } catch (Exception e) {
+                          // ja removido
+                      }
+                      receiverOn = false;
+                  }
+              }
+
+              // Liga o protetor de tela depois de 5 minutos sem NENHUM sinal de uso:
+              // sem botao do controle, sem troca de janela, sem audio tocando e fora de TV ao vivo / HDMI.
+              private void checkIdle() {
+                  if (dreaming) return;
+                  long now = SystemClock.elapsedRealtime();
+                  if (now - lastActivity < IDLE_MS) return;
+                  PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                  if (pm != null && !pm.isInteractive()) return;
+                  // Assistindo: som tocando ou entrada de TV. Recomeca a contagem dos 5 minutos.
+                  if (isAudioPlaying() || isWatchingTv()) {
+                      lastActivity = now;
+                      return;
+                  }
+                  if (Screensaver.start(this)) {
+                      dreaming = true;
+                  } else {
+                      lastActivity = now;
+                  }
+              }
+
+              private boolean isAudioPlaying() {
+                  AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                  if (am == null) return false;
+                  try {
+                      if (am.isMusicActive()) return true;
+                      List<AudioPlaybackConfiguration> list = am.getActivePlaybackConfigurations();
+                      return list != null && !list.isEmpty();
+                  } catch (Exception e) {
+                      return false;
+                  }
+              }
+
+              // TV ao vivo / HDMI nao passam pelo audio do Android, entao o app em primeiro plano decide.
+              private boolean isWatchingTv() {
+                  String p = fgPackage;
+                  if (p == null || p.isEmpty()) return false;
+                  if (p.startsWith("org.droidtv.")
+                          || p.equals("com.google.android.tv")
+                          || p.equals("com.android.tv")
+                          || (p.startsWith("com.android.tv.") && !p.startsWith("com.android.tv.settings"))
+                          || p.contains("livetv") || p.contains("playtv") || p.contains("hdmi")
+                          || p.contains("tvinput") || p.contains(".tuner")) {
+                      return true;
+                  }
+                  return tvInputPackages().contains(p);
+              }
+
+              // Apps que fornecem entradas de TV (canais, HDMI, TV ao vivo) tambem contam como "assistindo".
+              private Set<String> tvInputPackages() {
+                  Set<String> out = new HashSet<>();
+                  try {
+                      TvInputManager m = (TvInputManager) getSystemService(Context.TV_INPUT_SERVICE);
+                      if (m != null) {
+                          for (TvInputInfo info : m.getTvInputList()) {
+                              out.add(info.getServiceInfo().packageName);
+                          }
+                      }
+                  } catch (Exception e) {
+                      // sem lista: usa so os nomes conhecidos
+                  }
+                  return out;
+              }
+
               private void removeDim() {
                   if (dimView == null) return;
                   try {
@@ -722,6 +925,7 @@ jobs:
 
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
+                  noteActivity();
                   // Todos os outros botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
                   if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
@@ -749,19 +953,27 @@ jobs:
           import android.content.Intent;
           import android.net.Uri;
           import android.content.pm.PackageManager;
+          import android.graphics.drawable.Drawable;
           import android.graphics.drawable.GradientDrawable;
+          import android.media.AudioManager;
           import android.os.Bundle;
           import android.provider.Settings;
+          import android.text.TextUtils;
           import android.util.TypedValue;
           import android.view.Gravity;
           import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
+          import android.view.ViewOutlineProvider;
           import android.view.WindowManager;
           import android.widget.FrameLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.ImageView;
           import android.widget.LinearLayout;
           import android.widget.TextView;
           import android.widget.Toast;
+
+          import java.util.List;
 
           public class PanelActivity extends Activity {
               static PanelActivity current;
@@ -774,6 +986,10 @@ jobs:
               private int level;
               private TextView levelText;
               private BarView bar;
+              private AudioManager audio;
+              private int volMax;
+              private int vol;
+              private TextView volText;
 
               private int dp(int v) {
                   return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
@@ -785,6 +1001,9 @@ jobs:
                   super.onCreate(savedInstanceState);
                   current = this;
                   level = Prefs.brightness(this);
+                  audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+                  volMax = Math.max(1, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+                  vol = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
 
                   getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
                   getWindow().setDimAmount(0.35f);
@@ -812,6 +1031,8 @@ jobs:
                   row(IconView.SCREEN, "Tela e imagem",
                           () -> open(new Intent(Settings.ACTION_DISPLAY_SETTINGS)));
                   brightnessRow();
+                  volumeRow();
+                  row(IconView.GRID, "Aplicativos", this::showAppsBar);
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
                   row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
 
@@ -975,6 +1196,194 @@ jobs:
               private void updateLevel() {
                   levelText.setText("Brilho " + level + "%");
                   if (bar != null) bar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float) (100 - Prefs.MIN_BRIGHTNESS));
+              }
+
+              // ---------------- Volume (igual ao brilho) ----------------
+
+              private int volPercent() {
+                  return Math.round(vol * 100f / volMax);
+              }
+
+              private int volStep() {
+                  return Math.max(1, Math.round(volMax * STEP / 100f));
+              }
+
+              private void volumeRow() {
+                  LinearLayout item = new LinearLayout(this);
+                  item.setOrientation(LinearLayout.VERTICAL);
+                  item.setGravity(Gravity.CENTER);
+                  item.setPadding(dp(4), dp(5), dp(4), dp(5));
+
+                  FrameLayout bubble = new FrameLayout(this);
+                  GradientDrawable bubbleBg = new GradientDrawable();
+                  bubbleBg.setShape(GradientDrawable.OVAL);
+                  bubbleBg.setColor(0x222B3444);
+                  bubbleBg.setStroke(dp(1), 0x333D7BFF);
+                  bubble.setBackground(bubbleBg);
+                  bubble.addView(new IconView(this, IconView.VOLUME),
+                          new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+                  item.addView(bubble, new LinearLayout.LayoutParams(dp(54), dp(54)));
+
+                  volText = label("Volume " + volPercent() + "%");
+                  volText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  volText.setGravity(Gravity.CENTER);
+                  LinearLayout.LayoutParams captionLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  captionLp.topMargin = dp(4);
+                  item.addView(volText, captionLp);
+                  item.setFocusable(true);
+                  item.setOnClickListener(v -> showVolumeOnly());
+                  item.setOnKeyListener((v, keyCode, event) -> {
+                      if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                          showVolumeOnly(); return true;
+                      }
+                      return false;
+                  });
+                  focusStyle(item);
+                  addToPanel(item);
+              }
+
+              private void showVolumeOnly() {
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0x00000000);
+                  LinearLayout control = new LinearLayout(this);
+                  control.setOrientation(LinearLayout.VERTICAL);
+                  control.setGravity(Gravity.CENTER);
+                  control.setPadding(dp(28), dp(18), dp(28), dp(18));
+                  control.setBackgroundColor(0x00000000);
+                  LinearLayout top = new LinearLayout(this);
+                  top.setGravity(Gravity.CENTER_VERTICAL);
+                  top.addView(new IconView(this, IconView.VOLUME), new LinearLayout.LayoutParams(dp(36), dp(36)));
+                  TextView title = label("Volume"); title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                  titleLp.leftMargin = dp(14); top.addView(title, titleLp);
+                  TextView percent = label(volPercent() + "%"); percent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20); top.addView(percent);
+                  control.addView(top);
+                  BarView volumeBar = new BarView(this);
+                  LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(420), dp(10)); barLp.topMargin = dp(18);
+                  control.addView(volumeBar, barLp);
+                  volumeBar.setFraction(vol / (float) volMax);
+                  FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  cp.bottomMargin = dp(42); root.addView(control, cp);
+                  setContentView(root);
+                  control.setFocusable(true); control.requestFocus();
+                  control.setOnKeyListener((v, key, ev) -> {
+                      if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                          setVolume(vol + (key == KeyEvent.KEYCODE_DPAD_RIGHT ? volStep() : -volStep()));
+                          percent.setText(volPercent() + "%");
+                          volumeBar.setFraction(vol / (float) volMax);
+                          return true;
+                      }
+                      if (key == KeyEvent.KEYCODE_BACK || key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) { finish(); return true; }
+                      return false;
+                  });
+              }
+
+              private void setVolume(int value) {
+                  int v = Math.max(0, Math.min(volMax, value));
+                  if (v == vol) return;
+                  if (audio.isVolumeFixed()) {
+                      Toast.makeText(this, "Esta TV usa volume fixo", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  try {
+                      audio.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0);
+                      vol = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Não foi possível mudar o volume", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  if (volText != null) volText.setText("Volume " + volPercent() + "%");
+              }
+
+              // ---------------- Aplicativos ----------------
+
+              private void showAppsBar() {
+                  final List<Apps.Entry> list = Apps.ordered(this);
+                  if (list.isEmpty()) {
+                      Toast.makeText(this, "Nenhum aplicativo encontrado", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0x00000000);
+                  root.setOnClickListener(v -> finish());
+
+                  LinearLayout strip = new LinearLayout(this);
+                  strip.setOrientation(LinearLayout.HORIZONTAL);
+                  strip.setGravity(Gravity.CENTER);
+                  strip.setPadding(dp(24), dp(14), dp(24), dp(14));
+                  View firstItem = null;
+                  for (Apps.Entry e : list) {
+                      View item = appItem(e);
+                      LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(110), ViewGroup.LayoutParams.WRAP_CONTENT);
+                      ip.leftMargin = dp(6); ip.rightMargin = dp(6);
+                      strip.addView(item, ip);
+                      if (firstItem == null) firstItem = item;
+                  }
+
+                  HorizontalScrollView scroll = new HorizontalScrollView(this);
+                  scroll.setHorizontalScrollBarEnabled(false);
+                  scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                  scroll.setFillViewport(true);
+                  scroll.addView(strip, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
+                  sp.bottomMargin = dp(22);
+                  root.addView(scroll, sp);
+                  setContentView(root);
+                  firstItem.requestFocus();
+              }
+
+              private View appItem(final Apps.Entry e) {
+                  LinearLayout item = new LinearLayout(this);
+                  item.setOrientation(LinearLayout.VERTICAL);
+                  item.setGravity(Gravity.CENTER_HORIZONTAL);
+                  item.setPadding(dp(4), dp(8), dp(4), dp(8));
+
+                  final GradientDrawable ring = new GradientDrawable();
+                  ring.setShape(GradientDrawable.OVAL);
+                  ring.setColor(0xCC141A24);
+                  ring.setStroke(dp(1), 0x553D7BFF);
+                  FrameLayout circle = new FrameLayout(this);
+                  circle.setBackground(ring);
+                  circle.setClipToOutline(true);
+                  circle.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
+                  ImageView img = new ImageView(this);
+                  Drawable d = e.icon != null ? e.icon : e.banner;
+                  img.setImageDrawable(d);
+                  img.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+                  circle.addView(img, new FrameLayout.LayoutParams(dp(60), dp(60), Gravity.CENTER));
+                  item.addView(circle, new LinearLayout.LayoutParams(dp(72), dp(72)));
+
+                  final TextView name = label(e.label);
+                  name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  name.setGravity(Gravity.CENTER);
+                  name.setSingleLine(true);
+                  name.setEllipsize(TextUtils.TruncateAt.END);
+                  name.setAlpha(0.7f);
+                  LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  np.topMargin = dp(6);
+                  item.addView(name, np);
+
+                  item.setFocusable(true);
+                  item.setOnFocusChangeListener((v, has) -> {
+                      ring.setStroke(has ? dp(3) : dp(1), has ? 0xFF68A5FF : 0x553D7BFF);
+                      ring.setColor(has ? 0xFF1E2A40 : 0xCC141A24);
+                      name.setAlpha(has ? 1f : 0.7f);
+                      float sc = has ? 1.18f : 1f;
+                      v.animate().scaleX(sc).scaleY(sc).setDuration(140).start();
+                  });
+                  item.setOnClickListener(v -> v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(90)
+                          .withEndAction(() -> v.animate().scaleX(1.18f).scaleY(1.18f).setDuration(110)
+                                  .withEndAction(() -> {
+                                      Apps.launch(this, e);
+                                      finish();
+                                  }).start()).start());
+                  return item;
               }
 
               // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
