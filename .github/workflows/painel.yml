@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 9
-                  versionName '1.8'
+                  versionCode 10
+                  versionName '1.9'
               }
 
               compileOptions {
@@ -417,21 +417,24 @@ jobs:
 
           import android.content.Context;
           import android.graphics.Canvas;
+          import android.graphics.Color;
           import android.graphics.LinearGradient;
           import android.graphics.Matrix;
           import android.graphics.Paint;
           import android.graphics.PorterDuff;
           import android.graphics.PorterDuffXfermode;
+          import android.graphics.RadialGradient;
           import android.graphics.Shader;
           import android.view.View;
           import android.widget.LinearLayout;
 
-          // Fileira de blocos com reflexo de piso em tempo real: o reflexo e o proprio bloco desenhado
-          // de cabeca para baixo a cada quadro, entao acompanha zoom, brilho e a rolagem para o lado.
+          // Fileira de blocos com piso: luz colorida de ambiente embaixo de cada bloco e um reflexo suave,
+          // desenhado de cabeca para baixo a cada quadro (acompanha zoom, brilho e rolagem).
           final class ReflectRow extends LinearLayout {
               private final int reflectPx;
               private final int gapPx;
               private final Paint fade = new Paint();
+              private final Paint light = new Paint(Paint.ANTI_ALIAS_FLAG);
               private final Matrix m = new Matrix();
               private final Shader shader;
 
@@ -445,8 +448,8 @@ jobs:
                   setPadding(0, 0, 0, reflectPx);
                   int band = Math.max(1, reflectPx - gapPx);
                   shader = new LinearGradient(0f, 0f, 0f, band,
-                          new int[] { 0x80000000, 0x30000000, 0x00000000 },
-                          new float[] { 0f, 0.45f, 1f }, Shader.TileMode.CLAMP);
+                          new int[] { 0x40000000, 0x14000000, 0x00000000 },
+                          new float[] { 0f, 0.4f, 1f }, Shader.TileMode.CLAMP);
                   fade.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_IN));
               }
 
@@ -466,6 +469,26 @@ jobs:
                       float l = ch.getLeft() + ch.getTranslationX() - pad;
                       float r = ch.getRight() + ch.getTranslationX() + pad;
                       float top = axis + gapPx;
+
+                      // luz de ambiente colorida no piso, so abaixo do bloco
+                      if (ch instanceof Tile) {
+                          int neon = ((Tile) ch).getNeon();
+                          int a = ch.isFocused() ? 0x80 : 0x40;
+                          float cx = (l + r) / 2f;
+                          float rad = ch.getWidth() * 0.6f;
+                          canvas.save();
+                          canvas.clipRect(l, axis, r, top + band);
+                          canvas.translate(cx, axis);
+                          canvas.scale(1f, 0.28f);
+                          light.setShader(new RadialGradient(0f, 0f, rad,
+                                  new int[] { Color.argb(a, Color.red(neon), Color.green(neon), Color.blue(neon)),
+                                          Color.argb(0, Color.red(neon), Color.green(neon), Color.blue(neon)) },
+                                  null, Shader.TileMode.CLAMP));
+                          canvas.drawCircle(0f, 0f, rad, light);
+                          canvas.restore();
+                      }
+
+                      // reflexo suave
                       int save = canvas.saveLayer(l, top, r, top + band, null);
                       canvas.save();
                       canvas.translate(0f, gapPx);
@@ -489,6 +512,7 @@ jobs:
           import android.graphics.Bitmap;
           import android.graphics.Canvas;
           import android.graphics.Color;
+          import android.graphics.LinearGradient;
           import android.graphics.Outline;
           import android.graphics.Paint;
           import android.graphics.Rect;
@@ -517,6 +541,8 @@ jobs:
                   super(c);
                   setFocusable(true);
                   setClickable(true);
+                  // O realce quadrado padrao da TV aparecia atras dos botoes redondos.
+                  setDefaultFocusHighlightEnabled(false);
                   setClipChildren(false);
                   setClipToPadding(false);
                   final boolean isOval = oval;
@@ -549,6 +575,10 @@ jobs:
 
               void setContent(View v, FrameLayout.LayoutParams lp) {
                   holder.addView(v, lp);
+              }
+
+              int getNeon() {
+                  return neon.idle;
               }
 
               void setNeon(int color) {
@@ -595,10 +625,7 @@ jobs:
                   }
                   t.setContent(content, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                  View gloss = new View(c);
-                  gloss.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                          new int[] { 0x30FFFFFF, 0x00FFFFFF }));
-                  t.setContent(gloss, new FrameLayout.LayoutParams(
+                  t.setContent(new Sheen(c), new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                   t.setContentDescription(e.label);
                   t.setNeon(neonColor(e.banner != null ? e.banner : e.icon));
@@ -643,7 +670,30 @@ jobs:
                   }
               }
 
-              // Desenha a borda neon fina e, com foco, o anel LED com brilho para fora.
+              // Brilho de vidro: faixa de luz no topo e sombra suave embaixo (da profundidade 2.5D).
+              private static final class Sheen extends View {
+                  private final Paint sp = new Paint();
+
+                  Sheen(Context c) {
+                      super(c);
+                      setWillNotDraw(false);
+                  }
+
+                  @Override
+                  protected void onSizeChanged(int w, int h, int ow, int oh) {
+                      super.onSizeChanged(w, h, ow, oh);
+                      sp.setShader(new LinearGradient(0f, 0f, 0f, h,
+                              new int[] { 0x4DFFFFFF, 0x14FFFFFF, 0x00000000, 0x00000000, 0x59000000 },
+                              new float[] { 0f, 0.2f, 0.45f, 0.62f, 1f }, Shader.TileMode.CLAMP));
+                  }
+
+                  @Override
+                  protected void onDraw(Canvas c) {
+                      c.drawRect(0f, 0f, getWidth(), getHeight(), sp);
+                  }
+              }
+
+              // Borda neon com degrade e aura suave; com foco vira o anel azul LED com brilho para fora.
               private static final class Neon extends View {
                   private final boolean oval;
                   private final float radius;
@@ -651,9 +701,10 @@ jobs:
                   private final float idleW;
                   private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
                   private final RectF r = new RectF();
-                  private int idle = 0xFF8A6CFF;
+                  int idle = 0xFF8A6CFF;
                   private int idle2 = 0;
-                  private Shader sweep;
+                  private Shader edge;
+                  private Shader hi;
                   float focus = 0f;
 
                   Neon(Context c, boolean oval, float radius, int ringPx) {
@@ -661,7 +712,7 @@ jobs:
                       this.oval = oval;
                       this.radius = radius;
                       this.ringPx = ringPx;
-                      this.idleW = Math.max(2f, ringPx * 0.45f);
+                      this.idleW = Math.max(2f, ringPx * 0.5f);
                       p.setStyle(Paint.Style.STROKE);
                       setWillNotDraw(false);
                   }
@@ -669,7 +720,7 @@ jobs:
                   void setColors(int c1, int c2) {
                       idle = c1;
                       idle2 = c2;
-                      rebuildShader();
+                      rebuildShaders();
                       invalidate();
                   }
 
@@ -678,19 +729,25 @@ jobs:
                       invalidate();
                   }
 
-                  private void rebuildShader() {
-                      if (idle2 != 0 && getWidth() > 0) {
-                          sweep = new SweepGradient(getWidth() / 2f, getHeight() / 2f,
-                                  new int[] { idle, idle2, idle }, null);
+                  private void rebuildShaders() {
+                      int w = getWidth();
+                      int h = getHeight();
+                      if (w <= 0 || h <= 0) return;
+                      if (idle2 != 0) {
+                          edge = new SweepGradient(w / 2f, h / 2f, new int[] { idle, idle2, idle }, null);
                       } else {
-                          sweep = null;
+                          int dim = (idle & 0x00FFFFFF) | (0x66 << 24);
+                          edge = new LinearGradient(0f, 0f, 0f, h, new int[] { idle, dim },
+                                  null, Shader.TileMode.CLAMP);
                       }
+                      hi = new LinearGradient(0f, 0f, 0f, h * 0.55f, new int[] { 0xA0FFFFFF, 0x00FFFFFF },
+                              null, Shader.TileMode.CLAMP);
                   }
 
                   @Override
                   protected void onSizeChanged(int w, int h, int ow, int oh) {
                       super.onSizeChanged(w, h, ow, oh);
-                      rebuildShader();
+                      rebuildShaders();
                   }
 
                   private void shape(Canvas c, float rad) {
@@ -702,16 +759,44 @@ jobs:
                   protected void onDraw(Canvas c) {
                       float w = getWidth();
                       float h = getHeight();
+                      float f = focus;
 
-                      // borda neon fina
+                      // aura neon suave em volta (some quando o anel LED aparece)
+                      if (f < 0.99f) {
+                          final int na = 4;
+                          float st = Math.max(2f, ringPx * 0.35f);
+                          p.setShader(null);
+                          p.setStrokeWidth(st + 0.6f);
+                          p.setColor(idle);
+                          for (int i = na; i >= 1; i--) {
+                              float e = (i - 0.5f) * st;
+                              float k = 1f - (i - 1f) / na;
+                              p.setAlpha((int) (255 * 0.22f * (1f - f) * k * k));
+                              r.set(-e, -e, w + e, h + e);
+                              shape(c, radius + e);
+                          }
+                      }
+
+                      // borda neon fina, clara em cima e mais escura embaixo
                       p.setStrokeWidth(idleW);
-                      p.setShader(sweep);
+                      p.setShader(edge);
                       p.setColor(idle);
-                      p.setAlpha((int) (225 * (1f - focus)));
+                      p.setAlpha((int) (245 * (1f - f)));
                       r.set(idleW / 2f, idleW / 2f, w - idleW / 2f, h - idleW / 2f);
                       shape(c, Math.max(0f, radius - idleW / 2f));
+
+                      // fio de luz no topo (bisel)
+                      if (!oval && hi != null) {
+                          float in = idleW * 1.4f;
+                          p.setShader(hi);
+                          p.setStrokeWidth(Math.max(1f, idleW * 0.6f));
+                          p.setColor(0xFFFFFFFF);
+                          p.setAlpha((int) (255 * (1f - f * 0.5f)));
+                          r.set(in, in, w - in, h - in);
+                          shape(c, Math.max(0f, radius - in));
+                      }
                       p.setShader(null);
-                      if (focus <= 0.01f) return;
+                      if (f <= 0.01f) return;
 
                       // brilho LED: aneis para fora, cada vez mais fracos
                       final int n = 6;
@@ -721,7 +806,7 @@ jobs:
                       for (int i = n; i >= 1; i--) {
                           float e = (i - 0.5f) * step;
                           float k = 1f - (i - 1f) / n;
-                          p.setAlpha((int) (255 * 0.42f * focus * k * k));
+                          p.setAlpha((int) (255 * 0.42f * f * k * k));
                           r.set(-e, -e, w + e, h + e);
                           shape(c, radius + e);
                       }
@@ -729,12 +814,12 @@ jobs:
                       // anel LED + fio de luz por dentro
                       p.setStrokeWidth(ringPx);
                       p.setColor(LED);
-                      p.setAlpha((int) (255 * focus));
+                      p.setAlpha((int) (255 * f));
                       r.set(ringPx / 2f, ringPx / 2f, w - ringPx / 2f, h - ringPx / 2f);
                       shape(c, Math.max(0f, radius - ringPx / 2f));
                       p.setStrokeWidth(Math.max(1f, ringPx * 0.35f));
                       p.setColor(0xFFCFE6FF);
-                      p.setAlpha((int) (210 * focus));
+                      p.setAlpha((int) (210 * f));
                       shape(c, Math.max(0f, radius - ringPx / 2f));
                   }
               }
@@ -1598,11 +1683,11 @@ jobs:
                   int tileH = (int) (sw * 0.075f);
                   float radius = sw * 0.0095f;
                   int ring = (int) (sw * 0.0018f) + 2;
-                  int reflectPx = (int) (tileH * 0.55f);
+                  int reflectPx = (int) (tileH * 0.38f);
                   int padH = (int) (sw * 0.012f);
                   int padV = (int) (sw * 0.012f);
 
-                  ReflectRow strip = new ReflectRow(this, reflectPx, (int) (tileH * 0.04f));
+                  ReflectRow strip = new ReflectRow(this, reflectPx, (int) (tileH * 0.05f));
                   strip.setGravity(Gravity.CENTER);
                   strip.setPadding(padH, padV, padH, reflectPx);
                   View firstItem = null;
@@ -1767,7 +1852,7 @@ jobs:
                   float clockPx = w * 0.0215f;
                   clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, clockPx);
                   clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-                  clock.setShadowLayer(w * 0.006f, 0f, 0f, 0xCC6FA8FF);
+                  clock.setShadowLayer(w * 0.0022f, 0f, 0f, 0x806FA8FF);
                   FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.TOP | Gravity.START);
@@ -1799,14 +1884,14 @@ jobs:
                   dockPadH = padH;
                   dockScroll.setPadding(padH, padV, padH, padV);
                   float tileH = w * 0.075f;
-                  final int reflectPx = px(tileH * 0.55f);
-                  dock = new ReflectRow(this, reflectPx, px(tileH * 0.04f));
+                  final int reflectPx = px(tileH * 0.38f);
+                  dock = new ReflectRow(this, reflectPx, px(tileH * 0.05f));
                   dockScroll.addView(dock, new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
                   FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + reflectPx + padV * 2,
                           Gravity.BOTTOM);
-                  sl.bottomMargin = px(h * 0.012f);
+                  sl.bottomMargin = px(h * 0.02f);
                   dockScroll.setVisibility(View.GONE);
                   root.addView(dockScroll, sl);
 
@@ -1877,6 +1962,8 @@ jobs:
                           if (key == android.view.KeyEvent.KEYCODE_DPAD_UP || key == android.view.KeyEvent.KEYCODE_DPAD_DOWN) return true;
                       }
                       if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) { showDock(); return true; }
+                      // Com os apps na tela, "baixo" nao tem para onde ir: sem isso o foco pulava para o ponto invisivel.
+                      if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && dockVisible) return true;
                       if (key == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
                           hideDock();
                           swallowUp = true;
