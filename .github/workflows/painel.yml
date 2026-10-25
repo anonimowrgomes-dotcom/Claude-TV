@@ -112,6 +112,11 @@ jobs:
                       android:theme="@style/HomeTheme" />
 
                   <activity
+                      android:name=".LauncherSettingsActivity"
+                      android:exported="false"
+                      android:theme="@style/HomeTheme" />
+
+                  <activity
                       android:name=".PanelActivity"
                       android:exported="false"
                       android:excludeFromRecents="true"
@@ -1012,8 +1017,7 @@ jobs:
                   float right = w * 0.0150f;
                   float top = h * 0.0245f;
                   root.addView(circleButton(IconView.GEAR, d, () -> {
-                      try { startActivity(new Intent(this, PanelActivity.class)); }
-                      catch (Exception ignored) { openSettings(Settings.ACTION_SETTINGS); }
+                      startActivity(new Intent(this, LauncherSettingsActivity.class));
                   }), topRight(d, right, top));
                   Tile wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
                   // Ícone Wi-Fi limpo, sem selo/cadeado sobreposto.
@@ -1397,6 +1401,104 @@ jobs:
                   box.addView(t);
                   return box;
               }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/LauncherSettingsActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.util.TypedValue;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          public class LauncherSettingsActivity extends Activity {
+              private int dp(float v) {
+                  return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics()));
+              }
+
+              @Override public void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  getWindow().setStatusBarColor(Color.BLACK);
+                  getWindow().setNavigationBarColor(Color.BLACK);
+                  LinearLayout page = new LinearLayout(this);
+                  page.setOrientation(LinearLayout.VERTICAL);
+                  page.setPadding(dp(42), dp(24), dp(42), dp(24));
+                  page.setBackgroundColor(Color.BLACK);
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setFillViewport(true);
+                  scroll.addView(page);
+
+                  TextView title = new TextView(this);
+                  title.setText("Configurações da launcher");
+                  title.setTextColor(Color.WHITE);
+                  title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 27);
+                  title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  title.setPadding(0, 0, 0, dp(18));
+                  page.addView(title);
+
+                  addOption(page, "Configurações do sistema da TV", "Abrir as configurações do Android", () -> launchSettings());
+                  addOption(page, "Mudar papel de parede", "Escolher um novo fundo para a TV", () -> {
+                      try { startActivity(new Intent(Intent.ACTION_SET_WALLPAPER)); }
+                      catch (Exception e) { toast("A TV não disponibilizou o seletor de papel de parede."); }
+                  });
+                  addOption(page, "Organizar e ocultar aplicativos", "Abrir a lista de aplicativos instalados", () -> {
+                      startActivity(new Intent(this, AllAppsActivity.class));
+                  });
+                  addOption(page, "Personalizar tela inicial", "Ajustar a aparência e a disposição dos elementos", () -> toast("Personalização avançada ainda precisa ser implementada."));
+                  addOption(page, "Tamanho dos ícones", "Personalizar o tamanho dos cartões de aplicativos", () -> toast("A opção de tamanho ainda precisa ser conectada às preferências da launcher."));
+                  addOption(page, "Transparência", "Ajustar a transparência dos elementos da tela", () -> toast("A opção de transparência ainda precisa ser implementada."));
+                  addOption(page, "Restaurar padrão", "Voltar às configurações visuais padrão", () -> toast("As preferências visuais ainda não estão persistidas."));
+                  setContentView(scroll);
+              }
+
+              private void addOption(LinearLayout parent, String title, String subtitle, Runnable action) {
+                  LinearLayout card = new LinearLayout(this);
+                  card.setOrientation(LinearLayout.VERTICAL);
+                  card.setGravity(Gravity.CENTER_VERTICAL);
+                  card.setPadding(dp(18), dp(12), dp(18), dp(12));
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xFF1D2025);
+                  bg.setCornerRadius(dp(13));
+                  bg.setStroke(dp(1), 0xFFFFFFFF);
+                  card.setBackground(bg);
+                  card.setFocusable(true);
+                  card.setClickable(true);
+                  TextView heading = new TextView(this);
+                  heading.setText(title);
+                  heading.setTextColor(Color.WHITE);
+                  heading.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                  heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  card.addView(heading);
+                  TextView detail = new TextView(this);
+                  detail.setText(subtitle);
+                  detail.setTextColor(0xFFBFC3C9);
+                  detail.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  detail.setPadding(0, dp(4), 0, 0);
+                  card.addView(detail);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(76));
+                  lp.bottomMargin = dp(10);
+                  parent.addView(card, lp);
+                  card.setOnClickListener(v -> action.run());
+              }
+
+              private void launchSettings() {
+                  try { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+                  catch (Exception e) { toast("Não foi possível abrir as configurações do sistema."); }
+              }
+              private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
           }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/MainActivity.java <<'EOF_FILE'
