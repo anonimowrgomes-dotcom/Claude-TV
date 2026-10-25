@@ -1,4 +1,3 @@
-
 name: Build zk Volume APK
 
 on:
@@ -16,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar código
+      - name: Baixar o código
         uses: actions/checkout@v4
 
       - name: Configurar Java
@@ -27,8 +26,10 @@ jobs:
 
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
-      - name: Instalar SDK
+      - name: Instalar componentes Android necessários
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Configurar Gradle
@@ -36,7 +37,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Compilar APK
+      - name: Compilar APK de depuração
         run: gradle assembleDebug
 
       - name: Disponibilizar APK
@@ -45,4 +46,3 @@ jobs:
           name: zk-volume-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          
