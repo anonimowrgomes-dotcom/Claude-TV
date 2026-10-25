@@ -796,8 +796,9 @@ jobs:
 
               private GradientDrawable rowBg(boolean focused) {
                   GradientDrawable d = new GradientDrawable();
-                  d.setColor(focused ? ACCENT : 0x14FFFFFF);
+                  d.setColor(0x00000000);
                   d.setCornerRadius(dp(16));
+                  d.setStroke(focused ? dp(2) : dp(1), focused ? 0xFF68A5FF : 0x003D7BFF);
                   return d;
               }
 
@@ -851,43 +852,39 @@ jobs:
               }
 
               private void brightnessRow() {
-                  LinearLayout box = new LinearLayout(this);
-                  box.setOrientation(LinearLayout.VERTICAL);
-                  box.setGravity(Gravity.CENTER);
-                  box.setPadding(dp(10), dp(8), dp(10), dp(8));
+                  LinearLayout item = new LinearLayout(this);
+                  item.setOrientation(LinearLayout.VERTICAL);
+                  item.setGravity(Gravity.CENTER);
+                  item.setPadding(dp(4), dp(5), dp(4), dp(5));
 
-                  LinearLayout top = new LinearLayout(this);
-                  top.setOrientation(LinearLayout.HORIZONTAL);
-                  top.setGravity(Gravity.CENTER_VERTICAL);
-                  top.addView(new IconView(this, IconView.SUN), new LinearLayout.LayoutParams(dp(26), dp(26)));
+                  FrameLayout bubble = new FrameLayout(this);
+                  GradientDrawable bubbleBg = new GradientDrawable();
+                  bubbleBg.setShape(GradientDrawable.OVAL);
+                  bubbleBg.setColor(0x222B3444);
+                  bubbleBg.setStroke(dp(1), 0x333D7BFF);
+                  bubble.setBackground(bubbleBg);
+                  bubble.addView(new IconView(this, IconView.SUN),
+                          new FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER));
+                  item.addView(bubble, new LinearLayout.LayoutParams(dp(54), dp(54)));
 
-                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                          0, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tp.leftMargin = dp(16);
-                  tp.weight = 1f;
-                  top.addView(label("Brilho"), tp);
-
-                  levelText = label("");
-                  levelText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                  top.addView(levelText);
-                  box.addView(top);
-
-                  bar = new BarView(this);
-                  LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
-                  bp.topMargin = dp(12);
-                  box.addView(bar, bp);
-                  updateLevel();
-
-                  box.setFocusable(true);
-                  box.setOnClickListener(v -> showBrightnessOnly());
-                  box.setOnKeyListener((v, keyCode, event) -> {
+                  levelText = label("Brilho " + level + "%");
+                  levelText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  levelText.setGravity(Gravity.CENTER);
+                  LinearLayout.LayoutParams captionLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  captionLp.topMargin = dp(4);
+                  item.addView(levelText, captionLp);
+                  item.setFocusable(true);
+                  item.setOnClickListener(v -> showBrightnessOnly());
+                  item.setOnKeyListener((v, keyCode, event) -> {
                       if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) { showBrightnessOnly(); return true; }
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                          showBrightnessOnly(); return true;
+                      }
                       return false;
                   });
-                  focusStyle(box);
-                  addToPanel(box);
+                  focusStyle(item);
+                  addToPanel(item);
               }
 
               private void showBrightnessOnly() {
@@ -942,8 +939,8 @@ jobs:
               }
 
               private void updateLevel() {
-                  levelText.setText(level + "%");
-                  bar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float) (100 - Prefs.MIN_BRIGHTNESS));
+                  levelText.setText("Brilho " + level + "%");
+                  if (bar != null) bar.setFraction((level - Prefs.MIN_BRIGHTNESS) / (float) (100 - Prefs.MIN_BRIGHTNESS));
               }
 
               // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
@@ -1212,8 +1209,12 @@ jobs:
                           t.setScaleX(1.06f); t.setScaleY(1.06f);
                       }
                       dock.addView(t, tileLp(appW, tileH, gap));
-                      final int n = i;
-                      t.setOnFocusChangeListener((v, hasFocus) -> { if (hasFocus) lastIndex = n; });
+                      t.setOnFocusChangeListener((v, hasFocus) -> {
+                          if (hasFocus) {
+                              int current = dock.indexOfChild(v);
+                              if (current >= 0) lastIndex = current;
+                          }
+                      });
                   }
                   if (!ordered.isEmpty()) dock.getChildAt(Math.max(0, Math.min(lastIndex, ordered.size()-1))).requestFocus();
               }
@@ -1270,10 +1271,15 @@ jobs:
                   // Move the existing view instead of recreating every app tile on each key repeat.
                   if (from < dock.getChildCount() && to < dock.getChildCount()) {
                       View moving = dock.getChildAt(from);
+                      moving.setFocusable(false);
                       dock.removeViewAt(from);
                       dock.addView(moving, to);
-                      moving.animate().translationY(-px(h * 0.018f)).scaleX(1.06f).scaleY(1.06f).setDuration(90).start();
-                      moving.requestFocus();
+                      moving.setFocusable(true);
+                      moving.animate().translationY(-px(h * 0.018f)).scaleX(1.06f).scaleY(1.06f).setDuration(70).start();
+                      moving.post(() -> {
+                          moving.requestFocus();
+                          dockScroll.smoothScrollTo(Math.max(0, moving.getLeft() - dockScroll.getWidth() / 2 + moving.getWidth() / 2), 0);
+                      });
                   }
                   StringBuilder sb = new StringBuilder(); for (Apps.Entry a : visibleApps) { if (sb.length()>0) sb.append('|'); sb.append(a.pkg); }
                   getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putString("order", sb.toString()).apply();
@@ -1692,6 +1698,12 @@ jobs:
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  if (getIntent() != null) {
+                      startActivity(new Intent(this, HomeActivity.class));
+                      finish();
+                      return;
+                  }
+                  /* Configuração/manual antigo mantido abaixo para referência. */
                   LinearLayout root = new LinearLayout(this);
                   root.setOrientation(LinearLayout.VERTICAL);
                   root.setPadding(dp(48), dp(32), dp(48), dp(32));
