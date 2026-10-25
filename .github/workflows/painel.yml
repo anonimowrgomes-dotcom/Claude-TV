@@ -972,7 +972,6 @@ jobs:
               private float h;
               private LinearLayout dock;
               private HorizontalScrollView dockScroll;
-              private TextView arrowHint;
               private boolean dockVisible = false;
               private int lastIndex = 0;
 
@@ -1022,18 +1021,6 @@ jobs:
                   Tile wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
                   // Ícone Wi-Fi limpo, sem selo/cadeado sobreposto.
                   root.addView(wifiButton, topRight(d, right + d + gap, top));
-
-                  // Indicador discreto: pressione para baixo para revelar os aplicativos.
-                  arrowHint = new TextView(this);
-                  arrowHint.setText("˄");
-                  arrowHint.setTextColor(0x66FFFFFF);
-                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.026f);
-                  arrowHint.setGravity(Gravity.CENTER);
-                  arrowHint.setFocusable(false);
-                  FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(
-                          px(w * 0.06f), px(h * 0.035f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-                  al.bottomMargin = px(h * 0.002f);
-                  root.addView(arrowHint, al);
 
                   // Fileira larga de aplicativos, escondida inicialmente.
                   dockScroll = new HorizontalScrollView(this);
@@ -1108,14 +1095,12 @@ jobs:
               private void showDock() {
                   dockVisible = true;
                   dockScroll.setVisibility(View.VISIBLE);
-                  arrowHint.setVisibility(View.GONE);
                   if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
               }
 
               private void hideDock() {
                   dockVisible = false;
                   dockScroll.setVisibility(View.GONE);
-                  arrowHint.setVisibility(View.VISIBLE);
               }
 
               @Override
