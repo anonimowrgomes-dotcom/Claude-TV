@@ -1013,19 +1013,30 @@ jobs:
                   float top = h * 0.0245f;
                   root.addView(circleButton(IconView.GEAR, d, () -> openSettings(Settings.ACTION_SETTINGS)),
                           topRight(d, right, top));
-                  root.addView(circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS)),
-                          topRight(d, right + d + gap, top));
+                  Tile wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
+                  FrameLayout wifiWrap = new FrameLayout(this);
+                  wifiWrap.addView(wifiButton, new FrameLayout.LayoutParams(-1, -1));
+                  TextView lockBadge = new TextView(this);
+                  lockBadge.setText("▣");
+                  lockBadge.setTextColor(0xFFFFFFFF);
+                  lockBadge.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.010f);
+                  lockBadge.setGravity(Gravity.CENTER);
+                  lockBadge.setBackgroundColor(0xFF202329);
+                  FrameLayout.LayoutParams lockLp = new FrameLayout.LayoutParams(px(d * 0.30f), px(d * 0.30f), Gravity.BOTTOM | Gravity.END);
+                  wifiWrap.addView(lockBadge, lockLp);
+                  wifiWrap.setOnClickListener(v -> openSettings(Settings.ACTION_WIFI_SETTINGS));
+                  root.addView(wifiWrap, topRight(d, right + d + gap, top));
 
                   // Indicador discreto: pressione para baixo para revelar os aplicativos.
                   arrowHint = new TextView(this);
                   arrowHint.setText("⌃");
-                  arrowHint.setTextColor(0xCCFFFFFF);
-                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.025f);
+                  arrowHint.setTextColor(0x66FFFFFF);
+                  arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, w * 0.038f);
                   arrowHint.setGravity(Gravity.CENTER);
                   arrowHint.setFocusable(false);
                   FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(
-                          px(w * 0.07f), px(h * 0.055f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-                  al.bottomMargin = px(h * 0.015f);
+                          px(w * 0.09f), px(h * 0.065f), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+                  al.bottomMargin = px(h * 0.002f);
                   root.addView(arrowHint, al);
 
                   // Fileira larga de aplicativos, escondida inicialmente.
@@ -1143,12 +1154,10 @@ jobs:
                   for (Apps.Entry e : Apps.all(this)) byPkg.put(e.pkg, e);
 
                   List<View> tiles = new ArrayList<>();
-                  int shown = 0;
-                  for (String pkg : Apps.favorites(this)) {
-                      if (shown >= 6) break;
-                      final Apps.Entry e = byPkg.get(pkg);
-                      if (e == null) continue;
-                      shown++;
+                  // Mostra todos os aplicativos que a TV disponibiliza para a tela inicial.
+                  // A largura mostra aproximadamente seis por vez; os demais aparecem ao navegar para os lados.
+                  List<Apps.Entry> installed = Apps.all(this);
+                  for (Apps.Entry e : installed) {
                       Tile t = new Tile(this, false, radius, ring);
                       t.setContent(appContent(e), new FrameLayout.LayoutParams(
                               ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
