@@ -1006,22 +1006,48 @@ jobs:
 
           import android.graphics.Color;
           import android.graphics.Typeface;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.service.dreams.DreamService;
           import android.util.TypedValue;
           import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
           import android.view.ViewGroup;
           import android.widget.FrameLayout;
           import android.widget.TextClock;
+          import android.widget.TextView;
 
           public class ClockDream extends DreamService {
+              static ClockDream instance;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private TextView hint;
+              private int previousBrightness = 100;
+              private boolean changedBrightness;
+
+              private final Runnable hideHint = () -> {
+                  if (hint != null) hint.setVisibility(View.GONE);
+              };
+
               @Override
               public void onAttachedToWindow() {
                   super.onAttachedToWindow();
-                  setInteractive(false);
+                  instance = this;
+                  // Precisamos receber as teclas para permitir sair somente com OK.
+                  setInteractive(true);
                   setFullscreen(true);
+
+                  PanelService service = PanelService.instance;
+                  if (service != null) {
+                      previousBrightness = Prefs.brightness(this);
+                      service.applyBrightness(Prefs.MIN_BRIGHTNESS);
+                      changedBrightness = true;
+                  }
 
                   FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(Color.BLACK);
+                  root.setFocusable(true);
+                  root.setFocusableInTouchMode(true);
 
                   TextClock clock = new TextClock(this);
                   clock.setFormat24Hour("HH:mm");
@@ -1038,7 +1064,60 @@ jobs:
                   lp.rightMargin = (int) (36 * d);
                   root.addView(clock, lp);
 
+                  hint = new TextView(this);
+                  hint.setText("Para desbloquear a tela pressione o botão OK");
+                  hint.setTextColor(Color.WHITE);
+                  hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+                  hint.setGravity(Gravity.CENTER);
+                  hint.setVisibility(View.GONE);
+                  FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.CENTER);
+                  root.addView(hint, hp);
+
                   setContentView(root);
+                  root.requestFocus();
+              }
+
+              void handleRemoteKey(KeyEvent event) {
+                  if (event == null || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) return;
+                  int key = event.getKeyCode();
+                  if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER
+                          || key == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                      finish();
+                  } else {
+                      showHint();
+                  }
+              }
+
+              private void showHint() {
+                  if (hint == null) return;
+                  handler.removeCallbacks(hideHint);
+                  hint.setVisibility(View.VISIBLE);
+                  handler.postDelayed(hideHint, 1500L);
+              }
+
+              @Override
+              public boolean onKeyDown(int keyCode, KeyEvent event) {
+                  handleRemoteKey(event);
+                  return true;
+              }
+
+              @Override
+              public boolean onKeyUp(int keyCode, KeyEvent event) {
+                  return true;
+              }
+
+              @Override
+              public void onDreamingStopped() {
+                  handler.removeCallbacks(hideHint);
+                  PanelService service = PanelService.instance;
+                  if (changedBrightness && service != null) {
+                      service.applyBrightness(previousBrightness);
+                  }
+                  changedBrightness = false;
+                  if (instance == this) instance = null;
+                  super.onDreamingStopped();
               }
           }
           EOF_FILE
@@ -1337,6 +1416,8 @@ jobs:
                   String p = fgPackage;
                   if (p == null || p.isEmpty()) return false;
                   if (p.startsWith("org.droidtv.")
+                          || p.equals("com.google.android.youtube.tv")
+                          || p.equals("com.google.android.youtube")
                           || p.equals("com.google.android.tv")
                           || p.equals("com.android.tv")
                           || (p.startsWith("com.android.tv.") && !p.startsWith("com.android.tv.settings"))
@@ -1376,8 +1457,15 @@ jobs:
 
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
+                  // Enquanto o protetor esta ativo, roteia as teclas para ele antes do painel.
+                  // Assim uma tecla configurada para abrir o painel nao interrompe o ClockDream.
+                  ClockDream dream = ClockDream.instance;
+                  if (dream != null) {
+                      dream.handleRemoteKey(event);
+                      return true;
+                  }
+
                   noteActivity();
-                  // Todos os outros botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
                   if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
 
@@ -1735,7 +1823,7 @@ jobs:
                   LinearLayout top = new LinearLayout(this);
                   top.setGravity(Gravity.CENTER_VERTICAL);
                   top.addView(new IconView(this, IconView.VOLUME), new LinearLayout.LayoutParams(dp(36), dp(36)));
-                  TextView title = label("zk Volume 👑"); title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  TextView title = label("Volume"); title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
                   LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
                   titleLp.leftMargin = dp(14); top.addView(title, titleLp);
                   TextView percent = label(volPercent() + "%"); percent.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20); top.addView(percent);
@@ -1744,13 +1832,6 @@ jobs:
                   LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(dp(420), dp(10)); barLp.topMargin = dp(18);
                   control.addView(volumeBar, barLp);
                   volumeBar.setFraction(vol / (float) volMax);
-                  TextView hint = label("Use as setas esquerda/direita para ajustar");
-                  hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-                  hint.setGravity(Gravity.CENTER);
-                  LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  hintLp.topMargin = dp(12);
-                  control.addView(hint, hintLp);
                   FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
                   cp.bottomMargin = dp(42); root.addView(control, cp);
                   setContentView(root);
