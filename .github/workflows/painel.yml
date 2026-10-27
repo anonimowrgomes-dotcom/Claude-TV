@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 12
-                  versionName '2.1'
+                  versionCode 13
+                  versionName '2.2'
               }
 
               compileOptions {
@@ -1006,8 +1006,6 @@ jobs:
 
           import android.graphics.Color;
           import android.graphics.Typeface;
-          import android.os.Handler;
-          import android.os.Looper;
           import android.service.dreams.DreamService;
           import android.util.TypedValue;
           import android.view.Gravity;
@@ -1019,35 +1017,38 @@ jobs:
           import android.widget.TextView;
 
           public class ClockDream extends DreamService {
-              static ClockDream instance;
-              private final Handler handler = new Handler(Looper.getMainLooper());
               private TextView hint;
-              private int previousBrightness = 100;
-              private boolean changedBrightness;
-
-              private final Runnable hideHint = () -> {
-                  if (hint != null) hint.setVisibility(View.GONE);
+              private final android.os.Handler handler = new android.os.Handler();
+              private final Runnable hideHint = new Runnable() {
+                  @Override public void run() {
+                      if (hint != null) hint.setVisibility(View.GONE);
+                  }
               };
 
               @Override
               public void onAttachedToWindow() {
                   super.onAttachedToWindow();
-                  instance = this;
-                  // Precisamos receber as teclas para permitir sair somente com OK.
                   setInteractive(true);
                   setFullscreen(true);
+                  setScreenBright(false);
 
-                  PanelService service = PanelService.instance;
-                  if (service != null) {
-                      previousBrightness = Prefs.brightness(this);
-                      service.applyBrightness(Prefs.MIN_BRIGHTNESS);
-                      changedBrightness = true;
-                  }
-
-                  FrameLayout root = new FrameLayout(this);
-                  root.setBackgroundColor(Color.BLACK);
+                  FrameLayout root = new FrameLayout(this) {
+                      @Override
+                      public boolean dispatchKeyEvent(KeyEvent event) {
+                          if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
+                          int key = event.getKeyCode();
+                          if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER
+                                  || key == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                              finish();
+                              return true;
+                          }
+                          showHint();
+                          return true;
+                      }
+                  };
                   root.setFocusable(true);
                   root.setFocusableInTouchMode(true);
+                  root.setBackgroundColor(Color.BLACK);
 
                   TextClock clock = new TextClock(this);
                   clock.setFormat24Hour("HH:mm");
@@ -1071,7 +1072,7 @@ jobs:
                   hint.setGravity(Gravity.CENTER);
                   hint.setVisibility(View.GONE);
                   FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                           Gravity.CENTER);
                   root.addView(hint, hp);
 
@@ -1079,44 +1080,16 @@ jobs:
                   root.requestFocus();
               }
 
-              void handleRemoteKey(KeyEvent event) {
-                  if (event == null || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) return;
-                  int key = event.getKeyCode();
-                  if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER
-                          || key == KeyEvent.KEYCODE_NUMPAD_ENTER) {
-                      finish();
-                  } else {
-                      showHint();
-                  }
-              }
-
               private void showHint() {
                   if (hint == null) return;
-                  handler.removeCallbacks(hideHint);
                   hint.setVisibility(View.VISIBLE);
+                  handler.removeCallbacks(hideHint);
                   handler.postDelayed(hideHint, 1500L);
-              }
-
-              @Override
-              public boolean onKeyDown(int keyCode, KeyEvent event) {
-                  handleRemoteKey(event);
-                  return true;
-              }
-
-              @Override
-              public boolean onKeyUp(int keyCode, KeyEvent event) {
-                  return true;
               }
 
               @Override
               public void onDreamingStopped() {
                   handler.removeCallbacks(hideHint);
-                  PanelService service = PanelService.instance;
-                  if (changedBrightness && service != null) {
-                      service.applyBrightness(previousBrightness);
-                  }
-                  changedBrightness = false;
-                  if (instance == this) instance = null;
                   super.onDreamingStopped();
               }
           }
@@ -1189,13 +1162,31 @@ jobs:
 
           import android.content.Context;
           import android.content.Intent;
+          import android.media.AudioManager;
+          import android.os.SystemClock;
+          import android.view.KeyEvent;
 
           final class Screensaver {
               private Screensaver() { }
 
+              // Tenta pausar a sessao de midia ativa antes de entrar no protetor.
+              // A TV/aplicativo pode ignorar eventos de midia enviados por apps comuns.
+              static void pausePlayback(Context c) {
+                  try {
+                      AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+                      if (am == null) return;
+                      long now = SystemClock.uptimeMillis();
+                      am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
+                              KeyEvent.KEYCODE_MEDIA_PAUSE, 0));
+                      am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP,
+                              KeyEvent.KEYCODE_MEDIA_PAUSE, 0));
+                  } catch (Throwable ignored) { }
+              }
+
               // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
               // O caminho que funciona e a acao SLEEP das Configuracoes da TV (a mesma do botao do painel).
               static boolean start(Context c) {
+                  pausePlayback(c);
                   Intent i = new Intent("com.google.android.pano.action.SLEEP");
                   i.setClassName("com.android.tv.settings",
                           "com.android.tv.settings.device.display.daydream.DaydreamVoiceAction");
@@ -1416,8 +1407,6 @@ jobs:
                   String p = fgPackage;
                   if (p == null || p.isEmpty()) return false;
                   if (p.startsWith("org.droidtv.")
-                          || p.equals("com.google.android.youtube.tv")
-                          || p.equals("com.google.android.youtube")
                           || p.equals("com.google.android.tv")
                           || p.equals("com.android.tv")
                           || (p.startsWith("com.android.tv.") && !p.startsWith("com.android.tv.settings"))
@@ -1457,15 +1446,8 @@ jobs:
 
               @Override
               protected boolean onKeyEvent(KeyEvent event) {
-                  // Enquanto o protetor esta ativo, roteia as teclas para ele antes do painel.
-                  // Assim uma tecla configurada para abrir o painel nao interrompe o ClockDream.
-                  ClockDream dream = ClockDream.instance;
-                  if (dream != null) {
-                      dream.handleRemoteKey(event);
-                      return true;
-                  }
-
                   noteActivity();
+                  // Todos os outros botoes seguem normalmente para o sistema.
                   if (MainActivity.visible) return false;
                   if (!Prefs.keys(this).contains(event.getKeyCode())) return false;
 
@@ -1926,6 +1908,7 @@ jobs:
               // No Android 14 o atalho antigo do sistema virou um "stub" que nao faz nada.
               // O caminho que funciona e a acao SLEEP das Configuracoes da TV.
               private void startScreensaver() {
+                  Screensaver.pausePlayback(this);
                   Intent i = new Intent("com.google.android.pano.action.SLEEP");
                   i.setClassName("com.android.tv.settings",
                           "com.android.tv.settings.device.display.daydream.DaydreamVoiceAction");
