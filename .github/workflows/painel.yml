@@ -62,7 +62,7 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 14
+                  versionCode 15
                   versionName '2.2'
               }
 
@@ -1265,9 +1265,13 @@ jobs:
                   if (now - lastActivity < IDLE_MS) return;
                   PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                   if (pm != null && !pm.isInteractive()) return;
-                  // O protetor também pode entrar durante vídeo/TV após o período sem comandos.
-                  // A pausa real depende do aplicativo/entrada: Android não oferece um comando
-                  // universal para congelar qualquer app ou HDMI sem privilégios de sistema.
+                  // Modo AUTOMATICO: nunca iniciar descanso enquanto houver reprodução ativa.
+                  // A detecção cobre áudio/media ativo e apps/entradas conhecidos de TV ao vivo/HDMI.
+                  // A ativação MANUAL continua disponível pelo painel, inclusive durante um vídeo.
+                  if (isAudioPlaying() || isWatchingTv()) {
+                      lastActivity = now;
+                      return;
+                  }
                   if (Screensaver.start(this)) {
                       dreaming = true;
                   } else {
@@ -2234,7 +2238,74 @@ jobs:
                   TextView title = new TextView(this); title.setText("Aplicativos escondidos"); title.setTextColor(0xFFFFFFFF); title.setTextSize(TypedValue.COMPLEX_UNIT_SP,22); title.setPadding(0,0,0,px(h*0.01f)); box.addView(title);
                   AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
                   if (found.isEmpty()) { TextView empty = new TextView(this); empty.setText("Nenhum aplicativo escondido"); empty.setTextColor(0xFFCCCCCC); box.addView(empty); }
-                  for (Apps.Entry e : found) addMenuButton(box, "＋   " + e.label, () -> { java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE).getStringSet("hidden", new java.util.HashSet<>())); hset.remove(e.pkg); getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply(); d.dismiss(); buildDock(); showHiddenApps(); });
+                  for (Apps.Entry e : found) {
+                      LinearLayout row = new LinearLayout(this);
+                      row.setOrientation(LinearLayout.HORIZONTAL);
+                      row.setGravity(Gravity.CENTER_VERTICAL);
+                      row.setPadding(px(w * 0.008f), px(h * 0.006f), px(w * 0.008f), px(h * 0.006f));
+                      GradientDrawable rowBg = new GradientDrawable();
+                      rowBg.setColor(0xFF202938);
+                      rowBg.setCornerRadius(px(w * 0.008f));
+                      row.setBackground(rowBg);
+                      LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, px(h * 0.075f));
+                      rowLp.bottomMargin = px(h * 0.006f);
+                      box.addView(row, rowLp);
+
+                      // Botao restaurar: remove o app da lista de ocultos.
+                      TextView restore = new TextView(this);
+                      restore.setText("↩");
+                      restore.setTextColor(0xFFFFFFFF);
+                      restore.setTextSize(TypedValue.COMPLEX_UNIT_SP, 23);
+                      restore.setGravity(Gravity.CENTER);
+                      restore.setContentDescription("Restaurar " + e.label);
+                      restore.setFocusable(true);
+                      GradientDrawable restoreBg = new GradientDrawable();
+                      restoreBg.setColor(0xFF315B96);
+                      restoreBg.setCornerRadius(px(9));
+                      restore.setBackground(restoreBg);
+                      row.addView(restore, new LinearLayout.LayoutParams(px(w * 0.043f), -1));
+                      restore.setOnClickListener(v -> {
+                          java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE).getStringSet("hidden", new java.util.HashSet<>()));
+                          hset.remove(e.pkg);
+                          getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply();
+                          d.dismiss(); buildDock(); showHiddenApps();
+                      });
+
+                      // Botao de informacoes do app oculto.
+                      TextView info = new TextView(this);
+                      info.setText("ⓘ");
+                      info.setTextColor(0xFFFFFFFF);
+                      info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21);
+                      info.setGravity(Gravity.CENTER);
+                      info.setContentDescription("Informações de " + e.label);
+                      info.setFocusable(true);
+                      GradientDrawable infoBg = new GradientDrawable();
+                      infoBg.setColor(0xFF343D4D);
+                      infoBg.setCornerRadius(px(9));
+                      info.setBackground(infoBg);
+                      LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(px(w * 0.043f), -1);
+                      infoLp.leftMargin = px(w * 0.004f);
+                      row.addView(info, infoLp);
+                      info.setOnClickListener(v -> openAppInfo(e));
+
+                      ImageView appIcon = new ImageView(this);
+                      appIcon.setImageDrawable(e.icon);
+                      appIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      appIcon.setPadding(px(5), px(5), px(5), px(5));
+                      LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(px(w * 0.045f), -1);
+                      iconLp.leftMargin = px(w * 0.006f);
+                      row.addView(appIcon, iconLp);
+
+                      TextView name = new TextView(this);
+                      name.setText(e.label);
+                      name.setTextColor(0xFFFFFFFF);
+                      name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                      name.setSingleLine(true);
+                      name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                      name.setGravity(Gravity.CENTER_VERTICAL);
+                      name.setPadding(px(w * 0.008f), 0, px(w * 0.006f), 0);
+                      row.addView(name, new LinearLayout.LayoutParams(0, -1, 1f));
+                  }
                   addMenuButton(box, "Fechar", d::dismiss); d.show(); if (d.getWindow()!=null) { d.getWindow().setBackgroundDrawableResource(android.R.color.transparent); d.getWindow().setLayout((int)(w*0.48f), (int)(h*0.72f)); }
               }
 
