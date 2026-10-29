@@ -63,7 +63,7 @@ jobs:
                   minSdk 26
                   targetSdk 29
                   versionCode 14
-                  versionName '2.2'
+                  versionName '2.1'
               }
 
               compileOptions {
@@ -1865,781 +1865,664 @@ jobs:
           }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/HomeActivity.java <<'EOF_FILE'
-                    package com.painel.lateral;
-          
-                    import android.app.Activity;
-                    import android.app.AlertDialog;
-                    import android.content.DialogInterface;
-                    import android.content.Intent;
-                    import android.net.Uri;
-                    import android.content.pm.PackageManager;
-                    import android.graphics.Bitmap;
-                    import android.graphics.BitmapFactory;
-                    import android.graphics.ImageDecoder;
-                    import android.graphics.Typeface;
-                    import android.media.ExifInterface;
-                    import android.os.Build;
-                    import android.graphics.drawable.GradientDrawable;
-                    import android.os.Bundle;
-                    import android.provider.Settings;
-                    import android.util.DisplayMetrics;
-                    import android.util.TypedValue;
-                    import android.view.Gravity;
-                    import android.view.View;
-                    import android.view.ViewGroup;
-                    import android.widget.FrameLayout;
-                    import android.widget.HorizontalScrollView;
-                    import android.widget.ScrollView;
-                    import android.widget.Button;
-                    import android.widget.ImageView;
-                    import android.widget.LinearLayout;
-                    import android.widget.TextClock;
-                    import android.widget.TextView;
-                    import android.widget.Toast;
-          
-                    import java.io.File;
-                    import java.io.FileOutputStream;
-                    import java.io.InputStream;
-                    import java.util.ArrayList;
-                    import java.util.HashMap;
-                    import java.util.List;
-                    import java.util.Map;
-          
-                    public class HomeActivity extends Activity {
-                        private static final int CONTROL_BG = 0xFF1F2227;
-          
-                        private float w;
-                        private float h;
-                        private LinearLayout dock;
-                        private HorizontalScrollView dockScroll;
-                        private TextView arrowHint;
-                        private View focusAnchor;
-                        private Tile gearButton;
-                        private Tile wifiButton;
-                        private boolean swallowUp = false;
-                        private int dockPadH = 0;
-                        private int tileWpx = 0;
-                        private int gapPx = 0;
-                        private boolean dockVisible = false;
-                        private int lastIndex = 0;
-                        private boolean moveMode = false;
-                        private String movingPackage = null;
-                        private final List<Apps.Entry> visibleApps = new ArrayList<>();
-                        private static final int ACCENT_BLUE = 0xFF168CFF;
-                        private static final String PREF_MODE = "launcher_mode";
-                        private int launcherMode = 1;
-          
-                        // ---- Plano de fundo personalizado ----
-                        private static final int REQ_WALLPAPER = 4107;
-                        // Philips 65PUG7408/78: painel 4K (3840x2160), proporcao 16:9
-                        private static final int TV_W = 3840;
-                        private static final int TV_H = 2160;
-                        private static final float WALL_ASPECT = 16f / 9f;
-                        private static final float WALL_TOLERANCE = 0.015f;
-                        private static final int WALL_MIN_W = 1920;
-                        private static final int WALL_MIN_H = 1080;
-                        private static final int WALL_MAX_W = 7680;
-                        private static final int WALL_MAX_H = 4320;
-                        private ImageView wallView;
-          
-                        private int px(float v) {
-                            return Math.round(v);
-                        }
-          
-                        @Override
-                        protected void onCreate(Bundle savedInstanceState) {
-                            super.onCreate(savedInstanceState);
-                            DisplayMetrics dm = getResources().getDisplayMetrics();
-                            w = dm.widthPixels;
-                            h = dm.heightPixels;
-                            launcherMode = getSharedPreferences("launcher_apps", MODE_PRIVATE).getInt(PREF_MODE, 1);
-                            if (launcherMode == 2) { createLauncher02(); return; }
-          
-                            FrameLayout root = new FrameLayout(this);
-                            root.setBackgroundColor(0xFF000000);
-          
-                            wallView = new ImageView(this);
-                            wallView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                            root.addView(wallView, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-          
-                            // relogio no canto superior esquerdo
-                            TextClock clock = new TextClock(this);
-                            clock.setFormat24Hour("HH:mm");
-                            clock.setFormat12Hour("HH:mm");
-                            clock.setTextColor(0xFFFFFFFF);
-                            float clockPx = w * 0.0215f;
-                            clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, clockPx);
-                            clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-                            clock.setShadowLayer(w * 0.0022f, 0f, 0f, 0x806FA8FF);
-                            FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                                    Gravity.TOP | Gravity.START);
-                            cl.leftMargin = px(w * 0.012f);
-                            cl.topMargin = px(h * 0.012f);
-                            root.addView(clock, cl);
-          
-                            // botoes redondos no canto superior direito
-                            float d = w * 0.0347f;
-                            float gap = w * 0.0102f;
-                            float right = w * 0.0150f;
-                            float top = h * 0.0245f;
-                            gearButton = circleButton(IconView.GEAR, d, () -> openSettings(Settings.ACTION_SETTINGS));
-                            root.addView(gearButton, topRight(d, right, top));
-                            wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
-                            // Ícone Wi-Fi limpo, sem selo/cadeado sobreposto.
-                            root.addView(wifiButton, topRight(d, right + d + gap, top));
-          
-                            arrowHint = new TextView(this);
-                            arrowHint.setVisibility(View.GONE);
-          
-                            // Fileira larga de aplicativos, escondida inicialmente.
-                            dockScroll = new HorizontalScrollView(this);
-                            dockScroll.setHorizontalScrollBarEnabled(false);
-                            dockScroll.setClipChildren(false);
-                            dockScroll.setClipToPadding(false);
-                            int padV = px(w * 0.012f);
-                            int padH = px(w * 0.012f);
-                            dockPadH = padH;
-                            dockScroll.setPadding(padH, padV, padH, padV);
-                            float tileH = w * 0.075f;
-                            final int reflectPx = px(tileH * 0.38f);
-                            dock = new ReflectRow(this, reflectPx, px(tileH * 0.05f));
-                            dockScroll.addView(dock, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                            FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + reflectPx + padV * 2,
-                                    Gravity.BOTTOM);
-                            sl.bottomMargin = px(h * 0.02f);
-                            dockScroll.setVisibility(View.GONE);
-                            root.addView(dockScroll, sl);
-          
-                            // Ponto de foco invisivel: quando os apps somem, o foco fica aqui e nao pula para os botoes de cima.
-                            focusAnchor = new View(this);
-                            focusAnchor.setFocusable(true);
-                            focusAnchor.setDefaultFocusHighlightEnabled(false);
-                            root.addView(focusAnchor, new FrameLayout.LayoutParams(
-                                    px(2), px(2), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
-          
-                            setContentView(root);
-                            loadWallpaperAtStart();
-                        }
-          
-                        private void switchLauncher(int mode) {
-                            getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putInt(PREF_MODE, mode).apply();
-                            recreate();
-                        }
-          
-                        // Launcher 02: composição visual independente, sem alterar os dados ou funções da Launcher 01.
-                        private void createLauncher02() {
-                            FrameLayout root = new FrameLayout(this);
-                            root.setBackgroundColor(0xFF080D18);
-          
-                            wallView = new ImageView(this);
-                            wallView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                            root.addView(wallView, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-          
-                            View tint = new View(this);
-                            android.graphics.drawable.GradientDrawable shade = new android.graphics.drawable.GradientDrawable(
-                                    android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                                    new int[]{0xCC07101F, 0x55351B65, 0xAA050914});
-                            tint.setBackground(shade);
-                            root.addView(tint, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-          
-                            LinearLayout header = new LinearLayout(this);
-                            header.setOrientation(LinearLayout.VERTICAL);
-                            header.setPadding(px(w*0.045f), px(h*0.055f), px(w*0.045f), 0);
-                            TextView eyebrow = new TextView(this);
-                            eyebrow.setText("ZK  /  TV EXPERIENCE");
-                            eyebrow.setTextColor(0xFF8EBBFF);
-                            eyebrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                            eyebrow.setLetterSpacing(0.18f);
-                            header.addView(eyebrow);
-                            TextClock clock = new TextClock(this);
-                            clock.setFormat24Hour("HH:mm");
-                            clock.setFormat12Hour("HH:mm");
-                            clock.setTextColor(0xFFFFFFFF);
-                            clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, w*0.052f);
-                            clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-                            clock.setShadowLayer(w*0.002f, 0, 0, 0xAA438CFF);
-                            LinearLayout.LayoutParams clockLp = new LinearLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                            clockLp.topMargin = px(h*0.005f);
-                            header.addView(clock, clockLp);
-                            TextView sub = new TextView(this);
-                            sub.setText("SEUS APLICATIVOS");
-                            sub.setTextColor(0xFFD7E4FF);
-                            sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                            sub.setLetterSpacing(0.12f);
-                            LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                            subLp.topMargin = px(h*0.012f);
-                            header.addView(sub, subLp);
-                            root.addView(header, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                                    Gravity.TOP | Gravity.START));
-          
-                            float d = w*0.038f;
-                            gearButton = circleButton(IconView.GEAR, d, () -> openSettings(Settings.ACTION_SETTINGS));
-                            wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
-                            FrameLayout.LayoutParams gearLp = new FrameLayout.LayoutParams(px(d), px(d), Gravity.TOP | Gravity.END);
-                            gearLp.topMargin = px(h*0.045f); gearLp.rightMargin = px(w*0.045f);
-                            root.addView(gearButton, gearLp);
-                            FrameLayout.LayoutParams wifiLp = new FrameLayout.LayoutParams(px(d), px(d), Gravity.TOP | Gravity.END);
-                            wifiLp.topMargin = px(h*0.045f); wifiLp.rightMargin = px(w*0.045f + d + w*0.012f);
-                            root.addView(wifiButton, wifiLp);
-          
-                            arrowHint = new TextView(this);
-                            arrowHint.setText("◂  NAVEGUE PELOS APLICATIVOS  ▸");
-                            arrowHint.setTextColor(0xFFB6C9EA);
-                            arrowHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                            arrowHint.setGravity(Gravity.CENTER);
-                            FrameLayout.LayoutParams hintLp = new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-                            hintLp.bottomMargin = px(h*0.025f);
-                            root.addView(arrowHint, hintLp);
-          
-                            dockScroll = new HorizontalScrollView(this);
-                            dockScroll.setHorizontalScrollBarEnabled(false);
-                            dockScroll.setClipChildren(false);
-                            dockScroll.setClipToPadding(false);
-                            int padV = px(w*0.014f), padH = px(w*0.045f);
-                            dockPadH = padH;
-                            dockScroll.setPadding(padH, padV, padH, padV);
-                            float tileH = w*0.095f;
-                            int reflectPx = px(tileH*0.20f);
-                            dock = new ReflectRow(this, reflectPx, px(tileH*0.04f));
-                            dockScroll.addView(dock, new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                            FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
-                                    ViewGroup.LayoutParams.MATCH_PARENT, px(tileH)+reflectPx+padV*2,
-                                    Gravity.CENTER_VERTICAL);
-                            sl.topMargin = px(h*0.08f);
-                            dockScroll.setVisibility(View.VISIBLE);
-                            root.addView(dockScroll, sl);
-          
-                            focusAnchor = new View(this);
-                            focusAnchor.setFocusable(true);
-                            focusAnchor.setDefaultFocusHighlightEnabled(false);
-                            root.addView(focusAnchor, new FrameLayout.LayoutParams(px(2), px(2),
-                                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
-          
-                            dockVisible = true;
-                            setContentView(root);
-                            loadWallpaperAtStart();
-                        }
-          
-                        private FrameLayout.LayoutParams topRight(float d, float right, float top) {
-                            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                                    px(d), px(d), Gravity.TOP | Gravity.END);
-                            lp.rightMargin = px(right);
-                            lp.topMargin = px(top);
-                            return lp;
-                        }
-          
-                        private Tile circleButton(int icon, float d, Runnable action) {
-                            Tile t = new Tile(this, true, d / 2f, px(w * 0.0014f) + 2);
-                            GradientDrawable bg = new GradientDrawable();
-                            bg.setShape(GradientDrawable.OVAL);
-                            bg.setColor(0xE60E1016);
-                            t.setBackground(bg);
-                            t.setNeon(0xFF9A5CFF, 0xFF2D8CFF);
-                            IconView iv = new IconView(this, icon);
-                            int s = px(d * 0.5f);
-                            t.setContent(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
-                            t.setOnClickListener(v -> action.run());
-                            return t;
-                        }
-          
-                        private void openSettings(String action) {
-                            try {
-                                Intent i = new Intent(action);
-                                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                startActivity(i);
-                            } catch (Exception e) {
-                                // tela indisponivel
-                            }
-                        }
-          
-                        @Override
-                        public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-                            int key = event.getKeyCode();
-                            boolean down = event.getAction() == android.view.KeyEvent.ACTION_DOWN;
-          
-                            // O mesmo aperto de "cima" que escondeu os apps nao pode continuar subindo para os botoes do topo.
-                            if (key == android.view.KeyEvent.KEYCODE_DPAD_UP && swallowUp) {
-                                if (!down) { swallowUp = false; return true; }
-                                if (event.getRepeatCount() > 0) return true;
-                                swallowUp = false;
-                            }
-          
-                            if (down) {
-                                if (moveMode) {
-                                    if (key == android.view.KeyEvent.KEYCODE_DPAD_LEFT) { shiftMoving(-1); return true; }
-                                    if (key == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) { shiftMoving(1); return true; }
-                                    if (key == android.view.KeyEvent.KEYCODE_DPAD_CENTER || key == android.view.KeyEvent.KEYCODE_ENTER) {
-                                        if (event.getRepeatCount() == 0) finishMoving();
-                                        return true;
-                                    }
-                                    if (key == android.view.KeyEvent.KEYCODE_BACK) { finishMoving(); return true; }
-                                    if (key == android.view.KeyEvent.KEYCODE_DPAD_UP || key == android.view.KeyEvent.KEYCODE_DPAD_DOWN) return true;
-                                }
-                                if (launcherMode == 2 && (key == android.view.KeyEvent.KEYCODE_DPAD_UP || key == android.view.KeyEvent.KEYCODE_DPAD_DOWN)) return true;
-                                if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) { showDock(); return true; }
-                                // Com os apps na tela, "baixo" nao tem para onde ir: sem isso o foco pulava para o ponto invisivel.
-                                if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && dockVisible) return true;
-                                if (key == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
-                                    hideDock();
-                                    swallowUp = true;
-                                    return true;
-                                }
-                            }
-                            return super.dispatchKeyEvent(event);
-                        }
-          
-                        private void showDock() {
-                            dockVisible = true;
-                            dockScroll.setVisibility(View.VISIBLE);
-                            arrowHint.setVisibility(View.GONE);
-                            if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
-                        }
-          
-                        private void hideDock() {
-                            // Passa o foco para o ponto invisivel ANTES de esconder, senao o Android joga o foco no botao de configuracoes.
-                            if (focusAnchor != null) focusAnchor.requestFocus();
-                            dockVisible = false;
-                            dockScroll.setVisibility(View.GONE);
-                            arrowHint.setVisibility(View.VISIBLE);
-                        }
-          
-                        @Override
-                        protected void onResume() {
-                            super.onResume();
-                            buildDock();
-                            if (launcherMode == 2) {
-                                dockVisible = true;
-                                if (dock.getChildCount() > 0) dock.getChildAt(Math.max(0, Math.min(lastIndex, dock.getChildCount()-1))).requestFocus();
-                            } else if (!dockVisible && !moveMode && focusAnchor != null) focusAnchor.requestFocus();
-                        }
-          
-                        @Override
-                        protected void onNewIntent(Intent intent) {
-                            super.onNewIntent(intent);
-                            // Home apertado de novo: volta para o primeiro item
-                            lastIndex = 0;
-                            hideDock();
-                            buildDock();
-                        }
-          
-                        @Override
-                        public void onBackPressed() {
-                            // ja esta na tela inicial
-                        }
-          
-                        private void buildDock() {
-                            dock.removeAllViews();
-                            visibleApps.clear();
-                            float tileH = w * 0.075f;
-                            float appW = (w - px(w * 0.024f) - px(w * 0.006f) * 5) / 6f;
-                            int gap = px(w * 0.006f);
-                            tileWpx = px(appW);
-                            gapPx = gap;
-                            float radius = w * 0.0095f;
-                            int ring = px(w * 0.0018f) + 2;
-                            android.content.SharedPreferences prefs = getSharedPreferences("launcher_apps", MODE_PRIVATE);
-                            java.util.Set<String> hidden = new java.util.HashSet<>(prefs.getStringSet("hidden", new java.util.HashSet<>()));
-                            List<Apps.Entry> installed = Apps.all(this);
-                            Map<String, Apps.Entry> byPkg = new HashMap<>();
-                            for (Apps.Entry e : installed) byPkg.put(e.pkg, e);
-                            List<Apps.Entry> ordered = new ArrayList<>();
-                            String saved = prefs.getString("order", "");
-                            if (!saved.isEmpty()) for (String pkg : saved.split("\\|")) {
-                                Apps.Entry e = byPkg.get(pkg);
-                                if (e != null && !hidden.contains(pkg) && !ordered.contains(e)) ordered.add(e);
-                            }
-                            for (Apps.Entry e : installed) if (!hidden.contains(e.pkg) && !ordered.contains(e)) ordered.add(e);
-                            visibleApps.addAll(ordered);
-                            for (int i = 0; i < ordered.size(); i++) {
-                                final Apps.Entry e = ordered.get(i);
-                                Tile t = Tile.forApp(this, e, radius, ring, px(w * 0.032f));
-                                t.setOnClickListener(v -> { if (!moveMode) Apps.launch(this, e); });
-                                t.setLongClickable(true);
-                                t.setOnLongClickListener(v -> { showAppMenu(e); return true; });
-                                t.setFocusable(true);
-                                t.setContentDescription(e.label);
-                                if (moveMode && e.pkg.equals(movingPackage)) {
-                                    t.setTranslationY(-px(h * 0.018f));
-                                    t.setScaleX(1.06f); t.setScaleY(1.06f);
-                                }
-                                dock.addView(t, tileLp(appW, tileH, gap));
-                                t.setOnFocusChangeListener((v, hasFocus) -> {
-                                    if (hasFocus) {
-                                        int current = dock.indexOfChild(v);
-                                        if (current >= 0) lastIndex = current;
-                                    }
-                                });
-                            }
-                            if (!ordered.isEmpty()) dock.getChildAt(Math.max(0, Math.min(lastIndex, ordered.size()-1))).requestFocus();
-                        }
-          
-                        private void showAppMenu(Apps.Entry e) {
-                            LinearLayout box = new LinearLayout(this);
-                            box.setOrientation(LinearLayout.VERTICAL);
-                            box.setPadding(px(w*0.018f), px(h*0.018f), px(w*0.018f), px(h*0.012f));
-                            box.setBackgroundColor(0xFF10141C);
-                            TextView title = new TextView(this);
-                            title.setText(e.label);
-                            title.setTextColor(0xFFFFFFFF);
-                            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-                            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                            title.setPadding(0,0,0,px(h*0.012f));
-                            box.addView(title);
-                            AlertDialog dialog = new AlertDialog.Builder(this).setView(box).create();
-                            dialog.getWindow();
-                            addMenuButton(box, "↔   Mover aplicativo", () -> { dialog.dismiss(); beginMoving(e); });
-                            addMenuButton(box, "◉   Esconder aplicativo", () -> { dialog.dismiss(); hideApp(e); });
-                            addMenuButton(box, "▣   Mostrar apps escondidos", () -> { dialog.dismiss(); showHiddenApps(); });
-                            addMenuButton(box, "ⓘ   Informações do app", () -> { dialog.dismiss(); openAppInfo(e); });
-                            addMenuButton(box, "▤   Mudar Plano de fundo", () -> { dialog.dismiss(); pickWallpaper(); });
-                            addMenuButton(box, launcherMode == 2 ? "✦   Launcher 01" : "✦   Launcher 02",
-                                    () -> { dialog.dismiss(); switchLauncher(launcherMode == 2 ? 1 : 2); });
-                            addMenuButton(box, "Cancelar", dialog::dismiss);
-                            dialog.show();
-                            if (dialog.getWindow() != null) {
-                                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-                                dialog.getWindow().setLayout((int)(w*0.42f), ViewGroup.LayoutParams.WRAP_CONTENT);
-                            }
-                        }
-          
-                        private void addMenuButton(LinearLayout box, String label, Runnable action) {
-                            TextView b = new TextView(this);
-                            b.setText(label); b.setTextColor(0xFFFFFFFF); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-                            b.setGravity(Gravity.CENTER_VERTICAL); b.setFocusable(true); b.setPadding(px(w*0.012f), px(h*0.012f), px(w*0.012f), px(h*0.012f));
-                            GradientDrawable bg = new GradientDrawable(); bg.setColor(0xFF202B3B); bg.setCornerRadius(px(w*0.006f)); bg.setStroke(px(1), ACCENT_BLUE); b.setBackground(bg);
-                            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); lp.bottomMargin = px(h*0.006f); box.addView(b, lp);
-                            b.setOnFocusChangeListener((v, f) -> { GradientDrawable g = new GradientDrawable(); g.setColor(f ? 0xFF1769AA : 0xFF202B3B); g.setCornerRadius(px(w*0.006f)); g.setStroke(px(f?2:1), ACCENT_BLUE); b.setBackground(g); });
-                            b.setOnClickListener(v -> action.run());
-                        }
-          
-                        private void beginMoving(Apps.Entry e) {
-                            moveMode = true; movingPackage = e.pkg;
-                            setTopFocusable(false);
-                            lastIndex = Math.max(0, indexOfPackage(e.pkg));
-                            Toasts.show(this, "Use ← → para mover; OK para confirmar", Toast.LENGTH_LONG);
-                            buildDock();
-                        }
-          
-                        private int indexOfPackage(String pkg) { for (int i=0;i<visibleApps.size();i++) if (visibleApps.get(i).pkg.equals(pkg)) return i; return 0; }
-          
-                        // Enquanto move, os botoes do topo nao podem receber foco (era isso que piscava ao lado do Wi-Fi).
-                        private void setTopFocusable(boolean on) {
-                            if (gearButton != null) gearButton.setFocusable(on);
-                            if (wifiButton != null) wifiButton.setFocusable(on);
-                        }
-          
-                        // Mantem o app que esta sendo movido visivel, sem animacao, mesmo com movimento rapido.
-                        private void keepVisible(int index) {
-                            int vw = dockScroll.getWidth();
-                            if (vw <= 0) vw = (int) w;
-                            int step = tileWpx + gapPx;
-                            int left = dockPadH + index * step;
-                            int right = left + tileWpx;
-                            int sx = dockScroll.getScrollX();
-                            int target = sx;
-                            if (left - dockPadH < sx) target = left - dockPadH;
-                            else if (right + dockPadH > sx + vw) target = right + dockPadH - vw;
-                            int total = dockPadH * 2 + dock.getChildCount() * step;
-                            target = Math.max(0, Math.min(Math.max(0, total - vw), target));
-                            if (target != sx) dockScroll.scrollTo(target, 0);
-                        }
-          
-                        private void shiftMoving(int delta) {
-                            int from = indexOfPackage(movingPackage);
-                            int to = from + delta;
-                            if (from < 0 || to < 0 || to >= visibleApps.size() || to >= dock.getChildCount()) return;
-                            java.util.Collections.swap(visibleApps, from, to);
-                            lastIndex = to;
-                            // Troca de lugar o vizinho, e nao o app que esta com foco: o foco nunca se perde e nada pisca.
-                            View neighbor = dock.getChildAt(to);
-                            dock.removeViewAt(to);
-                            dock.addView(neighbor, from);
-                            StringBuilder sb = new StringBuilder();
-                            for (Apps.Entry a : visibleApps) { if (sb.length() > 0) sb.append('|'); sb.append(a.pkg); }
-                            getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putString("order", sb.toString()).apply();
-                            keepVisible(to);
-                        }
-          
-                        private void finishMoving() { moveMode = false; movingPackage = null; setTopFocusable(true); buildDock(); Toasts.show(this, "Ordem dos aplicativos salva", Toast.LENGTH_SHORT); }
-          
-                        private void hideApp(Apps.Entry e) {
-                            android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
-                            java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>())); hidden.add(e.pkg);
-                            p.edit().putStringSet("hidden", hidden).apply(); lastIndex = 0; buildDock();
-                        }
-          
-                        private void showHiddenApps() {
-                            android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
-                            java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>()));
-                            List<Apps.Entry> found = new ArrayList<>(); for (Apps.Entry e : Apps.all(this)) if (hidden.contains(e.pkg)) found.add(e);
-                            LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(px(w*0.018f),px(h*0.015f),px(w*0.018f),px(h*0.015f)); box.setBackgroundColor(0xFF10141C);
-                            TextView title = new TextView(this); title.setText("Aplicativos escondidos"); title.setTextColor(0xFFFFFFFF); title.setTextSize(TypedValue.COMPLEX_UNIT_SP,22); title.setPadding(0,0,0,px(h*0.01f)); box.addView(title);
-                            AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
-                            if (found.isEmpty()) { TextView empty = new TextView(this); empty.setText("Nenhum aplicativo escondido"); empty.setTextColor(0xFFCCCCCC); box.addView(empty); }
-                            for (Apps.Entry e : found) addMenuButton(box, "＋   " + e.label, () -> { java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE).getStringSet("hidden", new java.util.HashSet<>())); hset.remove(e.pkg); getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply(); d.dismiss(); buildDock(); showHiddenApps(); });
-                            addMenuButton(box, "Fechar", d::dismiss); d.show(); if (d.getWindow()!=null) { d.getWindow().setBackgroundDrawableResource(android.R.color.transparent); d.getWindow().setLayout((int)(w*0.48f), (int)(h*0.72f)); }
-                        }
-          
-                        private void openAppInfo(Apps.Entry e) {
-                            try { Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + e.pkg)); startActivity(i); }
-                            catch (Exception ex) { Toasts.show(this, "Informações do aplicativo indisponíveis", Toast.LENGTH_SHORT); }
-                        }
-          
-                        // ================= Plano de fundo personalizado =================
-          
-                        private File customWallpaperFile() {
-                            return new File(getFilesDir(), "wallpaper_custom");
-                        }
-          
-                        // Tamanho do painel: o maior modo que a TV informa, nunca menor que 3840x2160 (4K da 65PUG7408/78).
-                        private int[] panelSize() {
-                            int pw = TV_W;
-                            int ph = TV_H;
-                            try {
-                                android.view.Display d = getWindowManager().getDefaultDisplay();
-                                for (android.view.Display.Mode m : d.getSupportedModes()) {
-                                    pw = Math.max(pw, m.getPhysicalWidth());
-                                    ph = Math.max(ph, m.getPhysicalHeight());
-                                }
-                            } catch (Exception e) {
-                                // usa o padrao 4K
-                            }
-                            // limite de textura da GPU de TVs
-                            return new int[] { Math.min(pw, 4096), Math.min(ph, 4096) };
-                        }
-          
-                        private void loadWallpaperAtStart() {
-                            final File f = customWallpaperFile();
-                            if (!f.exists()) {
-                                wallView.setImageResource(R.drawable.wallpaper);
-                                return;
-                            }
-                            new Thread(() -> {
-                                final Bitmap b = decodeWallpaper(f);
-                                runOnUiThread(() -> {
-                                    if (isDestroyed()) return;
-                                    if (b != null) wallView.setImageBitmap(b);
-                                    else wallView.setImageResource(R.drawable.wallpaper);
-                                });
-                            }).start();
-                        }
-          
-                        // Decodifica sem perder qualidade: so reduz quando a imagem e maior que o painel (4K),
-                        // porque acima disso a TV nao mostra mais detalhe e a memoria nao aguenta 8K inteiro.
-                        private Bitmap decodeWallpaper(File f) {
-                            final int[] panel = panelSize();
-                            try {
-                                if (Build.VERSION.SDK_INT >= 28) {
-                                    final int pw = panel[0];
-                                    return ImageDecoder.decodeBitmap(ImageDecoder.createSource(f), (decoder, info, src) -> {
-                                        int iw = info.getSize().getWidth();
-                                        int ih = info.getSize().getHeight();
-                                        if (iw > pw) {
-                                            decoder.setTargetSize(pw, Math.max(1, Math.round((float) ih * pw / iw)));
-                                        }
-                                    });
-                                }
-                                BitmapFactory.Options bounds = new BitmapFactory.Options();
-                                bounds.inJustDecodeBounds = true;
-                                BitmapFactory.decodeFile(f.getAbsolutePath(), bounds);
-                                int sample = 1;
-                                while (bounds.outWidth / (sample * 2) >= panel[0]) sample *= 2;
-                                BitmapFactory.Options o = new BitmapFactory.Options();
-                                o.inSampleSize = sample;
-                                return BitmapFactory.decodeFile(f.getAbsolutePath(), o);
-                            } catch (Throwable t) {
-                                return null;
-                            }
-                        }
-          
-                        private void pickWallpaper() {
-                            Toasts.show(this, "Escolha uma imagem 16:9, de 1920x1080 até 7680x4320", Toast.LENGTH_LONG);
-                            Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                            open.addCategory(Intent.CATEGORY_OPENABLE);
-                            open.setType("image/*");
-                            try {
-                                startActivityForResult(open, REQ_WALLPAPER);
-                                return;
-                            } catch (Exception e) {
-                                // tenta o seletor alternativo
-                            }
-                            Intent get = new Intent(Intent.ACTION_GET_CONTENT);
-                            get.addCategory(Intent.CATEGORY_OPENABLE);
-                            get.setType("image/*");
-                            try {
-                                startActivityForResult(get, REQ_WALLPAPER);
-                            } catch (Exception e) {
-                                Toasts.show(this, "Esta TV não tem um seletor de arquivos instalado", Toast.LENGTH_LONG);
-                            }
-                        }
-          
-                        @Override
-                        protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-                            super.onActivityResult(requestCode, resultCode, data);
-                            if (requestCode == REQ_WALLPAPER && resultCode == RESULT_OK && data != null && data.getData() != null) {
-                                importWallpaper(data.getData());
-                            }
-                        }
-          
-                        private void importWallpaper(final Uri uri) {
-                            Toasts.show(this, "Aplicando plano de fundo…", Toast.LENGTH_SHORT);
-                            new Thread(() -> {
-                                final File tmp = new File(getFilesDir(), "wallpaper_tmp");
-                                final String error = importWallpaperSync(uri, tmp);
-                                final Bitmap bmp = error == null ? decodeWallpaper(tmp) : null;
-                                if (error == null && bmp != null) {
-                                    File dst = customWallpaperFile();
-                                    if (dst.exists()) dst.delete();
-                                    tmp.renameTo(dst);
-                                } else {
-                                    tmp.delete();
-                                }
-                                runOnUiThread(() -> {
-                                    if (error != null) {
-                                        showWallpaperError(error);
-                                    } else if (bmp == null) {
-                                        showWallpaperError("Não foi possível abrir essa imagem.");
-                                    } else {
-                                        wallView.setImageBitmap(bmp);
-                                        Toasts.show(this, "Plano de fundo alterado", Toast.LENGTH_SHORT);
-                                    }
-                                });
-                            }).start();
-                        }
-          
-                        // Valida o tamanho e copia o arquivo original, byte a byte (sem recomprimir), para a pasta do app.
-                        // Retorna null se deu certo, ou o texto do erro.
-                        private String importWallpaperSync(Uri uri, File tmp) {
-                            try {
-                                BitmapFactory.Options o = new BitmapFactory.Options();
-                                o.inJustDecodeBounds = true;
-                                try (InputStream in = getContentResolver().openInputStream(uri)) {
-                                    if (in == null) return "Não foi possível abrir o arquivo.";
-                                    BitmapFactory.decodeStream(in, null, o);
-                                }
-                                int iw = o.outWidth;
-                                int ih = o.outHeight;
-                                if (iw <= 0 || ih <= 0) return "Esse arquivo não é uma imagem válida.";
-          
-                                // fotos giradas (EXIF) trocam largura e altura
-                                try (InputStream in = getContentResolver().openInputStream(uri)) {
-                                    if (in != null) {
-                                        int ori = new ExifInterface(in).getAttributeInt(
-                                                ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-                                        if (ori == 5 || ori == 6 || ori == 7 || ori == 8) {
-                                            int t = iw;
-                                            iw = ih;
-                                            ih = t;
-                                        }
-                                    }
-                                } catch (Exception ignore) {
-                                    // sem EXIF: segue normal
-                                }
-          
-                                String dims = iw + "x" + ih;
-                                float ratio = (float) iw / (float) ih;
-                                if (Math.abs(ratio / WALL_ASPECT - 1f) > WALL_TOLERANCE) {
-                                    return "A imagem tem " + dims + " e não está na proporção 16:9 da TV. "
-                                            + "Use, por exemplo, 1920x1080, 3840x2160 ou 7680x4320.";
-                                }
-                                if (iw < WALL_MIN_W || ih < WALL_MIN_H) {
-                                    return "A imagem (" + dims + ") é pequena demais e ficaria borrada. O mínimo é "
-                                            + WALL_MIN_W + "x" + WALL_MIN_H + ".";
-                                }
-                                if (iw > WALL_MAX_W || ih > WALL_MAX_H) {
-                                    return "A imagem (" + dims + ") é grande demais. O máximo é "
-                                            + WALL_MAX_W + "x" + WALL_MAX_H + " (8K).";
-                                }
-          
-                                try (InputStream in = getContentResolver().openInputStream(uri);
-                                     FileOutputStream out = new FileOutputStream(tmp)) {
-                                    if (in == null) return "Não foi possível abrir o arquivo.";
-                                    byte[] buf = new byte[1 << 16];
-                                    int n;
-                                    while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                                }
-                                return null;
-                            } catch (Exception e) {
-                                return "Falha ao ler a imagem.";
-                            }
-                        }
-          
-                        private void showWallpaperError(String msg) {
-                            LinearLayout box = new LinearLayout(this);
-                            box.setOrientation(LinearLayout.VERTICAL);
-                            box.setPadding(px(w*0.018f), px(h*0.018f), px(w*0.018f), px(h*0.012f));
-                            box.setBackgroundColor(0xFF10141C);
-                            TextView title = new TextView(this);
-                            title.setText("Imagem não aceita");
-                            title.setTextColor(0xFFFFFFFF);
-                            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-                            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                            title.setPadding(0, 0, 0, px(h*0.012f));
-                            box.addView(title);
-                            TextView body = new TextView(this);
-                            body.setText(msg);
-                            body.setTextColor(0xFFCCCCCC);
-                            body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-                            body.setPadding(0, 0, 0, px(h*0.014f));
-                            box.addView(body);
-                            AlertDialog dialog = new AlertDialog.Builder(this).setView(box).create();
-                            addMenuButton(box, "Escolher outra imagem", () -> { dialog.dismiss(); pickWallpaper(); });
-                            addMenuButton(box, "Fechar", dialog::dismiss);
-                            dialog.show();
-                            if (dialog.getWindow() != null) {
-                                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-                                dialog.getWindow().setLayout((int)(w*0.42f), ViewGroup.LayoutParams.WRAP_CONTENT);
-                            }
-                        }
-          
-                        private LinearLayout.LayoutParams tileLp(float tw, float th, int gap) {
-                            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(tw), px(th));
-                            lp.rightMargin = gap;
-                            return lp;
-                        }
-          
-                        private Tile controlTile(int icon, float radius, int ring, float tw, float th) {
-                            Tile t = new Tile(this, false, radius, ring);
-                            GradientDrawable bg = new GradientDrawable();
-                            bg.setColor(CONTROL_BG);
-                            t.setBackground(bg);
-                            int s = px(th * 0.4f);
-                            t.setContent(new IconView(this, icon), new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
-                            return t;
-                        }
-          
-                        private View appContent(Apps.Entry e) {
-                            if (e.banner != null) {
-                                ImageView iv = new ImageView(this);
-                                iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                                iv.setImageDrawable(e.banner);
-                                return iv;
-                            }
-                            FrameLayout box = new FrameLayout(this);
-                            box.setBackgroundColor(CONTROL_BG);
-                            if (e.icon != null) {
-                                ImageView iv = new ImageView(this);
-                                iv.setImageDrawable(e.icon);
-                                iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                                int size = px(w * 0.032f);
-                                box.addView(iv, new FrameLayout.LayoutParams(size, size, Gravity.CENTER));
-                            }
-                            return box;
-                        }
-          
-                    }
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.DialogInterface;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.content.pm.PackageManager;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.ImageDecoder;
+          import android.graphics.Typeface;
+          import android.media.ExifInterface;
+          import android.os.Build;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.util.DisplayMetrics;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.ScrollView;
+          import android.widget.Button;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.TextClock;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.util.ArrayList;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Map;
+
+          public class HomeActivity extends Activity {
+              private static final int CONTROL_BG = 0xFF1F2227;
+
+              private float w;
+              private float h;
+              private LinearLayout dock;
+              private HorizontalScrollView dockScroll;
+              private TextView arrowHint;
+              private View focusAnchor;
+              private Tile gearButton;
+              private Tile wifiButton;
+              private boolean swallowUp = false;
+              private int dockPadH = 0;
+              private int tileWpx = 0;
+              private int gapPx = 0;
+              private boolean dockVisible = false;
+              private int lastIndex = 0;
+              private boolean moveMode = false;
+              private String movingPackage = null;
+              private final List<Apps.Entry> visibleApps = new ArrayList<>();
+              private static final int ACCENT_BLUE = 0xFF168CFF;
+
+              // ---- Plano de fundo personalizado ----
+              private static final int REQ_WALLPAPER = 4107;
+              // Philips 65PUG7408/78: painel 4K (3840x2160), proporcao 16:9
+              private static final int TV_W = 3840;
+              private static final int TV_H = 2160;
+              private static final float WALL_ASPECT = 16f / 9f;
+              private static final float WALL_TOLERANCE = 0.015f;
+              private static final int WALL_MIN_W = 1920;
+              private static final int WALL_MIN_H = 1080;
+              private static final int WALL_MAX_W = 7680;
+              private static final int WALL_MAX_H = 4320;
+              private ImageView wallView;
+
+              private int px(float v) {
+                  return Math.round(v);
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  DisplayMetrics dm = getResources().getDisplayMetrics();
+                  w = dm.widthPixels;
+                  h = dm.heightPixels;
+
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0xFF000000);
+
+                  wallView = new ImageView(this);
+                  wallView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  root.addView(wallView, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  // relogio no canto superior esquerdo
+                  TextClock clock = new TextClock(this);
+                  clock.setFormat24Hour("HH:mm");
+                  clock.setFormat12Hour("HH:mm");
+                  clock.setTextColor(0xFFFFFFFF);
+                  float clockPx = w * 0.0215f;
+                  clock.setTextSize(TypedValue.COMPLEX_UNIT_PX, clockPx);
+                  clock.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                  clock.setShadowLayer(w * 0.0022f, 0f, 0f, 0x806FA8FF);
+                  FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.TOP | Gravity.START);
+                  cl.leftMargin = px(w * 0.012f);
+                  cl.topMargin = px(h * 0.012f);
+                  root.addView(clock, cl);
+
+                  // botoes redondos no canto superior direito
+                  float d = w * 0.0347f;
+                  float gap = w * 0.0102f;
+                  float right = w * 0.0150f;
+                  float top = h * 0.0245f;
+                  gearButton = circleButton(IconView.GEAR, d, () -> openSettings(Settings.ACTION_SETTINGS));
+                  root.addView(gearButton, topRight(d, right, top));
+                  wifiButton = circleButton(IconView.WIFI, d, () -> openSettings(Settings.ACTION_WIFI_SETTINGS));
+                  // Ícone Wi-Fi limpo, sem selo/cadeado sobreposto.
+                  root.addView(wifiButton, topRight(d, right + d + gap, top));
+
+                  arrowHint = new TextView(this);
+                  arrowHint.setVisibility(View.GONE);
+
+                  // Fileira larga de aplicativos, escondida inicialmente.
+                  dockScroll = new HorizontalScrollView(this);
+                  dockScroll.setHorizontalScrollBarEnabled(false);
+                  dockScroll.setClipChildren(false);
+                  dockScroll.setClipToPadding(false);
+                  int padV = px(w * 0.012f);
+                  int padH = px(w * 0.012f);
+                  dockPadH = padH;
+                  dockScroll.setPadding(padH, padV, padH, padV);
+                  float tileH = w * 0.075f;
+                  final int reflectPx = px(tileH * 0.38f);
+                  dock = new ReflectRow(this, reflectPx, px(tileH * 0.05f));
+                  dockScroll.addView(dock, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, px(tileH) + reflectPx + padV * 2,
+                          Gravity.BOTTOM);
+                  sl.bottomMargin = px(h * 0.02f);
+                  dockScroll.setVisibility(View.GONE);
+                  root.addView(dockScroll, sl);
+
+                  // Ponto de foco invisivel: quando os apps somem, o foco fica aqui e nao pula para os botoes de cima.
+                  focusAnchor = new View(this);
+                  focusAnchor.setFocusable(true);
+                  focusAnchor.setDefaultFocusHighlightEnabled(false);
+                  root.addView(focusAnchor, new FrameLayout.LayoutParams(
+                          px(2), px(2), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
+
+                  setContentView(root);
+                  loadWallpaperAtStart();
+              }
+
+              private FrameLayout.LayoutParams topRight(float d, float right, float top) {
+                  FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                          px(d), px(d), Gravity.TOP | Gravity.END);
+                  lp.rightMargin = px(right);
+                  lp.topMargin = px(top);
+                  return lp;
+              }
+
+              private Tile circleButton(int icon, float d, Runnable action) {
+                  Tile t = new Tile(this, true, d / 2f, px(w * 0.0014f) + 2);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setShape(GradientDrawable.OVAL);
+                  bg.setColor(0xE60E1016);
+                  t.setBackground(bg);
+                  t.setNeon(0xFF9A5CFF, 0xFF2D8CFF);
+                  IconView iv = new IconView(this, icon);
+                  int s = px(d * 0.5f);
+                  t.setContent(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+                  t.setOnClickListener(v -> action.run());
+                  return t;
+              }
+
+              private void openSettings(String action) {
+                  try {
+                      Intent i = new Intent(action);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      startActivity(i);
+                  } catch (Exception e) {
+                      // tela indisponivel
+                  }
+              }
+
+              @Override
+              public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+                  int key = event.getKeyCode();
+                  boolean down = event.getAction() == android.view.KeyEvent.ACTION_DOWN;
+
+                  // O mesmo aperto de "cima" que escondeu os apps nao pode continuar subindo para os botoes do topo.
+                  if (key == android.view.KeyEvent.KEYCODE_DPAD_UP && swallowUp) {
+                      if (!down) { swallowUp = false; return true; }
+                      if (event.getRepeatCount() > 0) return true;
+                      swallowUp = false;
+                  }
+
+                  if (down) {
+                      if (moveMode) {
+                          if (key == android.view.KeyEvent.KEYCODE_DPAD_LEFT) { shiftMoving(-1); return true; }
+                          if (key == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) { shiftMoving(1); return true; }
+                          if (key == android.view.KeyEvent.KEYCODE_DPAD_CENTER || key == android.view.KeyEvent.KEYCODE_ENTER) {
+                              if (event.getRepeatCount() == 0) finishMoving();
+                              return true;
+                          }
+                          if (key == android.view.KeyEvent.KEYCODE_BACK) { finishMoving(); return true; }
+                          if (key == android.view.KeyEvent.KEYCODE_DPAD_UP || key == android.view.KeyEvent.KEYCODE_DPAD_DOWN) return true;
+                      }
+                      if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && !dockVisible) { showDock(); return true; }
+                      // Com os apps na tela, "baixo" nao tem para onde ir: sem isso o foco pulava para o ponto invisivel.
+                      if (key == android.view.KeyEvent.KEYCODE_DPAD_DOWN && dockVisible) return true;
+                      if (key == android.view.KeyEvent.KEYCODE_DPAD_UP && dockVisible) {
+                          hideDock();
+                          swallowUp = true;
+                          return true;
+                      }
+                  }
+                  return super.dispatchKeyEvent(event);
+              }
+
+              private void showDock() {
+                  dockVisible = true;
+                  dockScroll.setVisibility(View.VISIBLE);
+                  arrowHint.setVisibility(View.GONE);
+                  if (dock.getChildCount() > 0) dock.getChildAt(0).requestFocus();
+              }
+
+              private void hideDock() {
+                  // Passa o foco para o ponto invisivel ANTES de esconder, senao o Android joga o foco no botao de configuracoes.
+                  if (focusAnchor != null) focusAnchor.requestFocus();
+                  dockVisible = false;
+                  dockScroll.setVisibility(View.GONE);
+                  arrowHint.setVisibility(View.VISIBLE);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  buildDock();
+                  if (!dockVisible && !moveMode && focusAnchor != null) focusAnchor.requestFocus();
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  // Home apertado de novo: volta para o primeiro item
+                  lastIndex = 0;
+                  hideDock();
+                  buildDock();
+              }
+
+              @Override
+              public void onBackPressed() {
+                  // ja esta na tela inicial
+              }
+
+              private void buildDock() {
+                  dock.removeAllViews();
+                  visibleApps.clear();
+                  float tileH = w * 0.075f;
+                  float appW = (w - px(w * 0.024f) - px(w * 0.006f) * 5) / 6f;
+                  int gap = px(w * 0.006f);
+                  tileWpx = px(appW);
+                  gapPx = gap;
+                  float radius = w * 0.0095f;
+                  int ring = px(w * 0.0018f) + 2;
+                  android.content.SharedPreferences prefs = getSharedPreferences("launcher_apps", MODE_PRIVATE);
+                  java.util.Set<String> hidden = new java.util.HashSet<>(prefs.getStringSet("hidden", new java.util.HashSet<>()));
+                  List<Apps.Entry> installed = Apps.all(this);
+                  Map<String, Apps.Entry> byPkg = new HashMap<>();
+                  for (Apps.Entry e : installed) byPkg.put(e.pkg, e);
+                  List<Apps.Entry> ordered = new ArrayList<>();
+                  String saved = prefs.getString("order", "");
+                  if (!saved.isEmpty()) for (String pkg : saved.split("\\|")) {
+                      Apps.Entry e = byPkg.get(pkg);
+                      if (e != null && !hidden.contains(pkg) && !ordered.contains(e)) ordered.add(e);
+                  }
+                  for (Apps.Entry e : installed) if (!hidden.contains(e.pkg) && !ordered.contains(e)) ordered.add(e);
+                  visibleApps.addAll(ordered);
+                  for (int i = 0; i < ordered.size(); i++) {
+                      final Apps.Entry e = ordered.get(i);
+                      Tile t = Tile.forApp(this, e, radius, ring, px(w * 0.032f));
+                      t.setOnClickListener(v -> { if (!moveMode) Apps.launch(this, e); });
+                      t.setLongClickable(true);
+                      t.setOnLongClickListener(v -> { showAppMenu(e); return true; });
+                      t.setFocusable(true);
+                      t.setContentDescription(e.label);
+                      if (moveMode && e.pkg.equals(movingPackage)) {
+                          t.setTranslationY(-px(h * 0.018f));
+                          t.setScaleX(1.06f); t.setScaleY(1.06f);
+                      }
+                      dock.addView(t, tileLp(appW, tileH, gap));
+                      t.setOnFocusChangeListener((v, hasFocus) -> {
+                          if (hasFocus) {
+                              int current = dock.indexOfChild(v);
+                              if (current >= 0) lastIndex = current;
+                          }
+                      });
+                  }
+                  if (!ordered.isEmpty()) dock.getChildAt(Math.max(0, Math.min(lastIndex, ordered.size()-1))).requestFocus();
+              }
+
+              private void showAppMenu(Apps.Entry e) {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(px(w*0.018f), px(h*0.018f), px(w*0.018f), px(h*0.012f));
+                  box.setBackgroundColor(0xFF10141C);
+                  TextView title = new TextView(this);
+                  title.setText(e.label);
+                  title.setTextColor(0xFFFFFFFF);
+                  title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  title.setPadding(0,0,0,px(h*0.012f));
+                  box.addView(title);
+                  AlertDialog dialog = new AlertDialog.Builder(this).setView(box).create();
+                  dialog.getWindow();
+                  addMenuButton(box, "↔   Mover aplicativo", () -> { dialog.dismiss(); beginMoving(e); });
+                  addMenuButton(box, "◉   Esconder aplicativo", () -> { dialog.dismiss(); hideApp(e); });
+                  addMenuButton(box, "▣   Mostrar apps escondidos", () -> { dialog.dismiss(); showHiddenApps(); });
+                  addMenuButton(box, "ⓘ   Informações do app", () -> { dialog.dismiss(); openAppInfo(e); });
+                  addMenuButton(box, "▤   Mudar Plano de fundo", () -> { dialog.dismiss(); pickWallpaper(); });
+                  addMenuButton(box, "Cancelar", dialog::dismiss);
+                  dialog.show();
+                  if (dialog.getWindow() != null) {
+                      dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                      dialog.getWindow().setLayout((int)(w*0.42f), ViewGroup.LayoutParams.WRAP_CONTENT);
+                  }
+              }
+
+              private void addMenuButton(LinearLayout box, String label, Runnable action) {
+                  TextView b = new TextView(this);
+                  b.setText(label); b.setTextColor(0xFFFFFFFF); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  b.setGravity(Gravity.CENTER_VERTICAL); b.setFocusable(true); b.setPadding(px(w*0.012f), px(h*0.012f), px(w*0.012f), px(h*0.012f));
+                  GradientDrawable bg = new GradientDrawable(); bg.setColor(0xFF202B3B); bg.setCornerRadius(px(w*0.006f)); bg.setStroke(px(1), ACCENT_BLUE); b.setBackground(bg);
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); lp.bottomMargin = px(h*0.006f); box.addView(b, lp);
+                  b.setOnFocusChangeListener((v, f) -> { GradientDrawable g = new GradientDrawable(); g.setColor(f ? 0xFF1769AA : 0xFF202B3B); g.setCornerRadius(px(w*0.006f)); g.setStroke(px(f?2:1), ACCENT_BLUE); b.setBackground(g); });
+                  b.setOnClickListener(v -> action.run());
+              }
+
+              private void beginMoving(Apps.Entry e) {
+                  moveMode = true; movingPackage = e.pkg;
+                  setTopFocusable(false);
+                  lastIndex = Math.max(0, indexOfPackage(e.pkg));
+                  Toasts.show(this, "Use ← → para mover; OK para confirmar", Toast.LENGTH_LONG);
+                  buildDock();
+              }
+
+              private int indexOfPackage(String pkg) { for (int i=0;i<visibleApps.size();i++) if (visibleApps.get(i).pkg.equals(pkg)) return i; return 0; }
+
+              // Enquanto move, os botoes do topo nao podem receber foco (era isso que piscava ao lado do Wi-Fi).
+              private void setTopFocusable(boolean on) {
+                  if (gearButton != null) gearButton.setFocusable(on);
+                  if (wifiButton != null) wifiButton.setFocusable(on);
+              }
+
+              // Mantem o app que esta sendo movido visivel, sem animacao, mesmo com movimento rapido.
+              private void keepVisible(int index) {
+                  int vw = dockScroll.getWidth();
+                  if (vw <= 0) vw = (int) w;
+                  int step = tileWpx + gapPx;
+                  int left = dockPadH + index * step;
+                  int right = left + tileWpx;
+                  int sx = dockScroll.getScrollX();
+                  int target = sx;
+                  if (left - dockPadH < sx) target = left - dockPadH;
+                  else if (right + dockPadH > sx + vw) target = right + dockPadH - vw;
+                  int total = dockPadH * 2 + dock.getChildCount() * step;
+                  target = Math.max(0, Math.min(Math.max(0, total - vw), target));
+                  if (target != sx) dockScroll.scrollTo(target, 0);
+              }
+
+              private void shiftMoving(int delta) {
+                  int from = indexOfPackage(movingPackage);
+                  int to = from + delta;
+                  if (from < 0 || to < 0 || to >= visibleApps.size() || to >= dock.getChildCount()) return;
+                  java.util.Collections.swap(visibleApps, from, to);
+                  lastIndex = to;
+                  // Troca de lugar o vizinho, e nao o app que esta com foco: o foco nunca se perde e nada pisca.
+                  View neighbor = dock.getChildAt(to);
+                  dock.removeViewAt(to);
+                  dock.addView(neighbor, from);
+                  StringBuilder sb = new StringBuilder();
+                  for (Apps.Entry a : visibleApps) { if (sb.length() > 0) sb.append('|'); sb.append(a.pkg); }
+                  getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putString("order", sb.toString()).apply();
+                  keepVisible(to);
+              }
+
+              private void finishMoving() { moveMode = false; movingPackage = null; setTopFocusable(true); buildDock(); Toasts.show(this, "Ordem dos aplicativos salva", Toast.LENGTH_SHORT); }
+
+              private void hideApp(Apps.Entry e) {
+                  android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
+                  java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>())); hidden.add(e.pkg);
+                  p.edit().putStringSet("hidden", hidden).apply(); lastIndex = 0; buildDock();
+              }
+
+              private void showHiddenApps() {
+                  android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
+                  java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>()));
+                  List<Apps.Entry> found = new ArrayList<>(); for (Apps.Entry e : Apps.all(this)) if (hidden.contains(e.pkg)) found.add(e);
+                  LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(px(w*0.018f),px(h*0.015f),px(w*0.018f),px(h*0.015f)); box.setBackgroundColor(0xFF10141C);
+                  TextView title = new TextView(this); title.setText("Aplicativos escondidos"); title.setTextColor(0xFFFFFFFF); title.setTextSize(TypedValue.COMPLEX_UNIT_SP,22); title.setPadding(0,0,0,px(h*0.01f)); box.addView(title);
+                  AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
+                  if (found.isEmpty()) { TextView empty = new TextView(this); empty.setText("Nenhum aplicativo escondido"); empty.setTextColor(0xFFCCCCCC); box.addView(empty); }
+                  for (Apps.Entry e : found) addMenuButton(box, "＋   " + e.label, () -> { java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE).getStringSet("hidden", new java.util.HashSet<>())); hset.remove(e.pkg); getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply(); d.dismiss(); buildDock(); showHiddenApps(); });
+                  addMenuButton(box, "Fechar", d::dismiss); d.show(); if (d.getWindow()!=null) { d.getWindow().setBackgroundDrawableResource(android.R.color.transparent); d.getWindow().setLayout((int)(w*0.48f), (int)(h*0.72f)); }
+              }
+
+              private void openAppInfo(Apps.Entry e) {
+                  try { Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + e.pkg)); startActivity(i); }
+                  catch (Exception ex) { Toasts.show(this, "Informações do aplicativo indisponíveis", Toast.LENGTH_SHORT); }
+              }
+
+              // ================= Plano de fundo personalizado =================
+
+              private File customWallpaperFile() {
+                  return new File(getFilesDir(), "wallpaper_custom");
+              }
+
+              // Tamanho do painel: o maior modo que a TV informa, nunca menor que 3840x2160 (4K da 65PUG7408/78).
+              private int[] panelSize() {
+                  int pw = TV_W;
+                  int ph = TV_H;
+                  try {
+                      android.view.Display d = getWindowManager().getDefaultDisplay();
+                      for (android.view.Display.Mode m : d.getSupportedModes()) {
+                          pw = Math.max(pw, m.getPhysicalWidth());
+                          ph = Math.max(ph, m.getPhysicalHeight());
+                      }
+                  } catch (Exception e) {
+                      // usa o padrao 4K
+                  }
+                  // limite de textura da GPU de TVs
+                  return new int[] { Math.min(pw, 4096), Math.min(ph, 4096) };
+              }
+
+              private void loadWallpaperAtStart() {
+                  final File f = customWallpaperFile();
+                  if (!f.exists()) {
+                      wallView.setImageResource(R.drawable.wallpaper);
+                      return;
+                  }
+                  new Thread(() -> {
+                      final Bitmap b = decodeWallpaper(f);
+                      runOnUiThread(() -> {
+                          if (isDestroyed()) return;
+                          if (b != null) wallView.setImageBitmap(b);
+                          else wallView.setImageResource(R.drawable.wallpaper);
+                      });
+                  }).start();
+              }
+
+              // Decodifica sem perder qualidade: so reduz quando a imagem e maior que o painel (4K),
+              // porque acima disso a TV nao mostra mais detalhe e a memoria nao aguenta 8K inteiro.
+              private Bitmap decodeWallpaper(File f) {
+                  final int[] panel = panelSize();
+                  try {
+                      if (Build.VERSION.SDK_INT >= 28) {
+                          final int pw = panel[0];
+                          return ImageDecoder.decodeBitmap(ImageDecoder.createSource(f), (decoder, info, src) -> {
+                              int iw = info.getSize().getWidth();
+                              int ih = info.getSize().getHeight();
+                              if (iw > pw) {
+                                  decoder.setTargetSize(pw, Math.max(1, Math.round((float) ih * pw / iw)));
+                              }
+                          });
+                      }
+                      BitmapFactory.Options bounds = new BitmapFactory.Options();
+                      bounds.inJustDecodeBounds = true;
+                      BitmapFactory.decodeFile(f.getAbsolutePath(), bounds);
+                      int sample = 1;
+                      while (bounds.outWidth / (sample * 2) >= panel[0]) sample *= 2;
+                      BitmapFactory.Options o = new BitmapFactory.Options();
+                      o.inSampleSize = sample;
+                      return BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+                  } catch (Throwable t) {
+                      return null;
+                  }
+              }
+
+              private void pickWallpaper() {
+                  Toasts.show(this, "Escolha uma imagem 16:9, de 1920x1080 até 7680x4320", Toast.LENGTH_LONG);
+                  Intent open = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                  open.addCategory(Intent.CATEGORY_OPENABLE);
+                  open.setType("image/*");
+                  try {
+                      startActivityForResult(open, REQ_WALLPAPER);
+                      return;
+                  } catch (Exception e) {
+                      // tenta o seletor alternativo
+                  }
+                  Intent get = new Intent(Intent.ACTION_GET_CONTENT);
+                  get.addCategory(Intent.CATEGORY_OPENABLE);
+                  get.setType("image/*");
+                  try {
+                      startActivityForResult(get, REQ_WALLPAPER);
+                  } catch (Exception e) {
+                      Toasts.show(this, "Esta TV não tem um seletor de arquivos instalado", Toast.LENGTH_LONG);
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == REQ_WALLPAPER && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      importWallpaper(data.getData());
+                  }
+              }
+
+              private void importWallpaper(final Uri uri) {
+                  Toasts.show(this, "Aplicando plano de fundo…", Toast.LENGTH_SHORT);
+                  new Thread(() -> {
+                      final File tmp = new File(getFilesDir(), "wallpaper_tmp");
+                      final String error = importWallpaperSync(uri, tmp);
+                      final Bitmap bmp = error == null ? decodeWallpaper(tmp) : null;
+                      if (error == null && bmp != null) {
+                          File dst = customWallpaperFile();
+                          if (dst.exists()) dst.delete();
+                          tmp.renameTo(dst);
+                      } else {
+                          tmp.delete();
+                      }
+                      runOnUiThread(() -> {
+                          if (error != null) {
+                              showWallpaperError(error);
+                          } else if (bmp == null) {
+                              showWallpaperError("Não foi possível abrir essa imagem.");
+                          } else {
+                              wallView.setImageBitmap(bmp);
+                              Toasts.show(this, "Plano de fundo alterado", Toast.LENGTH_SHORT);
+                          }
+                      });
+                  }).start();
+              }
+
+              // Valida o tamanho e copia o arquivo original, byte a byte (sem recomprimir), para a pasta do app.
+              // Retorna null se deu certo, ou o texto do erro.
+              private String importWallpaperSync(Uri uri, File tmp) {
+                  try {
+                      BitmapFactory.Options o = new BitmapFactory.Options();
+                      o.inJustDecodeBounds = true;
+                      try (InputStream in = getContentResolver().openInputStream(uri)) {
+                          if (in == null) return "Não foi possível abrir o arquivo.";
+                          BitmapFactory.decodeStream(in, null, o);
+                      }
+                      int iw = o.outWidth;
+                      int ih = o.outHeight;
+                      if (iw <= 0 || ih <= 0) return "Esse arquivo não é uma imagem válida.";
+
+                      // fotos giradas (EXIF) trocam largura e altura
+                      try (InputStream in = getContentResolver().openInputStream(uri)) {
+                          if (in != null) {
+                              int ori = new ExifInterface(in).getAttributeInt(
+                                      ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                              if (ori == 5 || ori == 6 || ori == 7 || ori == 8) {
+                                  int t = iw;
+                                  iw = ih;
+                                  ih = t;
+                              }
+                          }
+                      } catch (Exception ignore) {
+                          // sem EXIF: segue normal
+                      }
+
+                      String dims = iw + "x" + ih;
+                      float ratio = (float) iw / (float) ih;
+                      if (Math.abs(ratio / WALL_ASPECT - 1f) > WALL_TOLERANCE) {
+                          return "A imagem tem " + dims + " e não está na proporção 16:9 da TV. "
+                                  + "Use, por exemplo, 1920x1080, 3840x2160 ou 7680x4320.";
+                      }
+                      if (iw < WALL_MIN_W || ih < WALL_MIN_H) {
+                          return "A imagem (" + dims + ") é pequena demais e ficaria borrada. O mínimo é "
+                                  + WALL_MIN_W + "x" + WALL_MIN_H + ".";
+                      }
+                      if (iw > WALL_MAX_W || ih > WALL_MAX_H) {
+                          return "A imagem (" + dims + ") é grande demais. O máximo é "
+                                  + WALL_MAX_W + "x" + WALL_MAX_H + " (8K).";
+                      }
+
+                      try (InputStream in = getContentResolver().openInputStream(uri);
+                           FileOutputStream out = new FileOutputStream(tmp)) {
+                          if (in == null) return "Não foi possível abrir o arquivo.";
+                          byte[] buf = new byte[1 << 16];
+                          int n;
+                          while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                      }
+                      return null;
+                  } catch (Exception e) {
+                      return "Falha ao ler a imagem.";
+                  }
+              }
+
+              private void showWallpaperError(String msg) {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(px(w*0.018f), px(h*0.018f), px(w*0.018f), px(h*0.012f));
+                  box.setBackgroundColor(0xFF10141C);
+                  TextView title = new TextView(this);
+                  title.setText("Imagem não aceita");
+                  title.setTextColor(0xFFFFFFFF);
+                  title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+                  title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  title.setPadding(0, 0, 0, px(h*0.012f));
+                  box.addView(title);
+                  TextView body = new TextView(this);
+                  body.setText(msg);
+                  body.setTextColor(0xFFCCCCCC);
+                  body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  body.setPadding(0, 0, 0, px(h*0.014f));
+                  box.addView(body);
+                  AlertDialog dialog = new AlertDialog.Builder(this).setView(box).create();
+                  addMenuButton(box, "Escolher outra imagem", () -> { dialog.dismiss(); pickWallpaper(); });
+                  addMenuButton(box, "Fechar", dialog::dismiss);
+                  dialog.show();
+                  if (dialog.getWindow() != null) {
+                      dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                      dialog.getWindow().setLayout((int)(w*0.42f), ViewGroup.LayoutParams.WRAP_CONTENT);
+                  }
+              }
+
+              private LinearLayout.LayoutParams tileLp(float tw, float th, int gap) {
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(px(tw), px(th));
+                  lp.rightMargin = gap;
+                  return lp;
+              }
+
+              private Tile controlTile(int icon, float radius, int ring, float tw, float th) {
+                  Tile t = new Tile(this, false, radius, ring);
+                  GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(CONTROL_BG);
+                  t.setBackground(bg);
+                  int s = px(th * 0.4f);
+                  t.setContent(new IconView(this, icon), new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+                  return t;
+              }
+
+              private View appContent(Apps.Entry e) {
+                  if (e.banner != null) {
+                      ImageView iv = new ImageView(this);
+                      iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                      iv.setImageDrawable(e.banner);
+                      return iv;
+                  }
+                  FrameLayout box = new FrameLayout(this);
+                  box.setBackgroundColor(CONTROL_BG);
+                  if (e.icon != null) {
+                      ImageView iv = new ImageView(this);
+                      iv.setImageDrawable(e.icon);
+                      iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      int size = px(w * 0.032f);
+                      box.addView(iv, new FrameLayout.LayoutParams(size, size, Gravity.CENTER));
+                  }
+                  return box;
+              }
+
+          }
           EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/AllAppsActivity.java <<'EOF_FILE'
           package com.painel.lateral;
