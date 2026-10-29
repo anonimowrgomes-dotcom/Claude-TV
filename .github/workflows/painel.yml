@@ -63,7 +63,7 @@ jobs:
                   minSdk 26
                   targetSdk 29
                   versionCode 14
-                  versionName '2.1'
+                  versionName '2.2'
               }
 
               compileOptions {
@@ -1046,62 +1046,13 @@ jobs:
           package com.painel.lateral;
 
           import android.content.Context;
-          import android.graphics.drawable.GradientDrawable;
-          import android.util.TypedValue;
-          import android.view.Gravity;
-          import android.view.ViewOutlineProvider;
-          import android.widget.ImageView;
-          import android.widget.LinearLayout;
-          import android.widget.TextView;
           import android.widget.Toast;
 
-          // Aviso rapido com o logo do Launcher TVzk ao lado do texto.
+          // Usa somente o toast padrao do Android, sem cartao ou icone gigante.
           final class Toasts {
               private Toasts() { }
-
-              private static int dp(Context c, int v) {
-                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
-                          c.getResources().getDisplayMetrics());
-              }
-
               static void show(Context c, CharSequence text, int duration) {
-                  Toast t = Toast.makeText(c, text, duration);
-                  try {
-                      LinearLayout box = new LinearLayout(c);
-                      box.setOrientation(LinearLayout.HORIZONTAL);
-                      box.setGravity(Gravity.CENTER_VERTICAL);
-                      box.setPadding(dp(c, 8), dp(c, 8), dp(c, 22), dp(c, 8));
-                      GradientDrawable bg = new GradientDrawable();
-                      bg.setColor(0xF2101722);
-                      bg.setCornerRadius(dp(c, 32));
-                      bg.setStroke(dp(c, 1), 0x992D8CFF);
-                      box.setBackground(bg);
-
-                      ImageView icon = new ImageView(c);
-                      icon.setImageResource(R.drawable.zk_icon);
-                      icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                      GradientDrawable circle = new GradientDrawable();
-                      circle.setShape(GradientDrawable.OVAL);
-                      circle.setColor(0xFF08101E);
-                      icon.setBackground(circle);
-                      icon.setClipToOutline(true);
-                      icon.setOutlineProvider(ViewOutlineProvider.BACKGROUND);
-                      box.addView(icon, new LinearLayout.LayoutParams(dp(c, 44), dp(c, 44)));
-
-                      TextView tv = new TextView(c);
-                      tv.setText(text);
-                      tv.setTextColor(0xFFFFFFFF);
-                      tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-                      tv.setMaxWidth(dp(c, 560));
-                      LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(
-                              LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                      tp.leftMargin = dp(c, 12);
-                      box.addView(tv, tp);
-                      t.setView(box);
-                  } catch (Throwable e) {
-                      // usa o aviso padrao do sistema
-                  }
-                  t.show();
+                  Toast.makeText(c, text, duration).show();
               }
           }
           EOF_FILE
@@ -1223,6 +1174,8 @@ jobs:
                   String pkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
                   if (cls.contains("Dream")) {
                       dreaming = true;
+                      // Escurece bastante durante o descanso usando a mesma camada de brilho.
+                      applyBrightness(5);
                       return;
                   }
                   // O proprio painel e a interface do sistema nao contam como "o app em uso".
@@ -1268,7 +1221,11 @@ jobs:
 
               private void noteActivity() {
                   lastActivity = SystemClock.elapsedRealtime();
-                  dreaming = false;
+                  if (dreaming) {
+                      dreaming = false;
+                      // Restaura o nível configurado quando o usuário acorda a TV.
+                      applyBrightness(Prefs.brightness(this));
+                  }
               }
 
               private void startIdleWatcher() {
@@ -1308,11 +1265,9 @@ jobs:
                   if (now - lastActivity < IDLE_MS) return;
                   PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
                   if (pm != null && !pm.isInteractive()) return;
-                  // Assistindo: som tocando ou entrada de TV. Recomeca a contagem dos 5 minutos.
-                  if (isAudioPlaying() || isWatchingTv()) {
-                      lastActivity = now;
-                      return;
-                  }
+                  // O protetor também pode entrar durante vídeo/TV após o período sem comandos.
+                  // A pausa real depende do aplicativo/entrada: Android não oferece um comando
+                  // universal para congelar qualquer app ou HDMI sem privilégios de sistema.
                   if (Screensaver.start(this)) {
                       dreaming = true;
                   } else {
@@ -1461,8 +1416,6 @@ jobs:
                   volMax = Math.max(1, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
                   vol = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
 
-                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                  getWindow().setDimAmount(0.35f);
 
                   FrameLayout root = new FrameLayout(this);
                   root.setOnClickListener(v -> finish());
@@ -1472,9 +1425,9 @@ jobs:
                   panel.setGravity(Gravity.CENTER);
                   panel.setPadding(dp(18), 0, dp(18), 0);
                   GradientDrawable bg = new GradientDrawable();
-                  bg.setColor(0x66111419);
+                  bg.setColor(0xD9111419);
                   bg.setCornerRadius(dp(34));
-                  bg.setStroke(dp(1), 0x332E405A);
+                  bg.setStroke(dp(1), 0x664A6288);
 
                   // Fundo arredondado fixo; a lista rola por cima com folga em cima e embaixo,
                   // para o seletor e o zoom nunca serem cortados.
@@ -2066,6 +2019,16 @@ jobs:
                   }
 
                   if (down) {
+                      // Com a fileira de apps escondida, esquerda/direita não devem
+                      // transferir o foco para os botões do topo.
+                      if (!dockVisible && !moveMode && focusAnchor != null && focusAnchor.hasFocus()
+                              && (key == android.view.KeyEvent.KEYCODE_DPAD_LEFT
+                              || key == android.view.KeyEvent.KEYCODE_DPAD_RIGHT)) return true;
+                      // Não saia do Wi-Fi pela esquerda nem das Configurações pela direita.
+                      if (!dockVisible && !moveMode && wifiButton != null && wifiButton.hasFocus()
+                              && key == android.view.KeyEvent.KEYCODE_DPAD_LEFT) return true;
+                      if (!dockVisible && !moveMode && gearButton != null && gearButton.hasFocus()
+                              && key == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) return true;
                       if (moveMode) {
                           if (key == android.view.KeyEvent.KEYCODE_DPAD_LEFT) { shiftMoving(-1); return true; }
                           if (key == android.view.KeyEvent.KEYCODE_DPAD_RIGHT) { shiftMoving(1); return true; }
