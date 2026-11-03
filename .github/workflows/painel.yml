@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 18
-                  versionName '2.5'
+                  versionCode 19
+                  versionName '2.6'
               }
 
               compileOptions {
@@ -275,6 +275,8 @@ jobs:
               static final int GRID = 5;
               static final int PLUS = 6;
               static final int VOLUME = 7;
+              static final int RESTORE = 8;
+              static final int INFO = 9;
 
               private final int type;
               private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -353,6 +355,24 @@ jobs:
                               r.set(cx + 1f * u - rad, cy - rad, cx + 1f * u + rad, cy + rad);
                               c.drawArc(r, -45f, 90f, false, p);
                           }
+                          break;
+                      }
+                      case RESTORE: {
+                          // seta de "desfazer": arco de 270 graus com a ponta no topo
+                          p.setStrokeJoin(Paint.Join.ROUND);
+                          float rad = 7.5f * u;
+                          r.set(cx - rad, cy - rad, cx + rad, cy + rad);
+                          c.drawArc(r, 270f, 270f, false, p);
+                          float ty = cy - rad;
+                          c.drawLine(cx - 2.6f * u, ty, cx + 0.6f * u, ty - 3f * u, p);
+                          c.drawLine(cx - 2.6f * u, ty, cx + 0.6f * u, ty + 3f * u, p);
+                          break;
+                      }
+                      case INFO: {
+                          c.drawCircle(cx, cy, 9.5f * u, p);
+                          c.drawLine(cx, cy - 0.5f * u, cx, cy + 5f * u, p);
+                          p.setStyle(Paint.Style.FILL);
+                          c.drawCircle(cx, cy - 4.4f * u, 1.3f * u, p);
                           break;
                       }
                       case SUN: {
@@ -870,6 +890,178 @@ jobs:
               }
           }
           EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/AppIcon.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Path;
+          import android.graphics.RectF;
+          import android.graphics.drawable.AdaptiveIconDrawable;
+          import android.graphics.drawable.Drawable;
+          import android.view.View;
+
+          // Icone de aplicativo para dialogos e listas: quadrado com cantos arredondados, preenchendo
+          // todo o espaco (sem moldura, sem circulo e sem um quadradinho menor dentro).
+          // Icones "adaptativos" sao desenhados sem a mascara redonda do sistema.
+          final class AppIcon extends View {
+              private final Drawable art;
+              private final boolean adaptive;
+              private final float cornerFraction;
+              private final Path clip = new Path();
+              private final RectF box = new RectF();
+
+              AppIcon(Context c, Drawable source, float cornerFraction) {
+                  super(c);
+                  this.cornerFraction = cornerFraction;
+                  this.art = copyOf(source);
+                  this.adaptive = art instanceof AdaptiveIconDrawable;
+              }
+
+              // Copia propria do drawable: ele e compartilhado com os blocos da tela inicial e o
+              // tamanho (bounds) de um nao pode interferir no outro.
+              private static Drawable copyOf(Drawable d) {
+                  if (d == null) return null;
+                  try {
+                      Drawable.ConstantState cs = d.getConstantState();
+                      if (cs != null) return cs.newDrawable().mutate();
+                  } catch (Exception e) {
+                      // usa o original
+                  }
+                  return d;
+              }
+
+              @Override
+              protected void onSizeChanged(int w, int h, int ow, int oh) {
+                  super.onSizeChanged(w, h, ow, oh);
+                  float r = Math.min(w, h) * cornerFraction;
+                  box.set(0, 0, w, h);
+                  clip.reset();
+                  clip.addRoundRect(box, r, r, Path.Direction.CW);
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  if (art == null) return;
+                  int w = getWidth();
+                  int h = getHeight();
+                  c.save();
+                  c.clipPath(clip);
+                  if (adaptive) {
+                      // As camadas medem 108dp, mas so os 72dp do meio aparecem: amplia 1,5x e centraliza.
+                      AdaptiveIconDrawable a = (AdaptiveIconDrawable) art;
+                      int ox = Math.round(w * 0.25f);
+                      int oy = Math.round(h * 0.25f);
+                      Drawable bg = a.getBackground();
+                      Drawable fg = a.getForeground();
+                      if (bg != null) {
+                          bg.setBounds(-ox, -oy, w + ox, h + oy);
+                          bg.draw(c);
+                      }
+                      if (fg != null) {
+                          fg.setBounds(-ox, -oy, w + ox, h + oy);
+                          fg.draw(c);
+                      }
+                  } else {
+                      art.setBounds(0, 0, w, h);
+                      art.draw(c);
+                  }
+                  c.restore();
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/HomeIconButton.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.animation.ValueAnimator;
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.Rect;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.FrameLayout;
+
+          // Botao da tela inicial (Wi-Fi / Configuracoes): em repouso aparece SO o icone, sem circulo.
+          // Ao receber o foco surge um seletor bem visivel: disco azul translucido, anel LED e brilho em volta.
+          final class HomeIconButton extends FrameLayout {
+              private static final int LED = 0xFF2D8CFF;
+              private static final int LED_LIGHT = 0xFFCFE6FF;
+
+              private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final int ringPx;
+              private float focus;
+              private ValueAnimator anim;
+
+              HomeIconButton(Context c, int iconType, int sizePx, int ringPx) {
+                  super(c);
+                  this.ringPx = Math.max(3, ringPx);
+                  setFocusable(true);
+                  setClickable(true);
+                  setDefaultFocusHighlightEnabled(false);
+                  setWillNotDraw(false);
+                  setClipChildren(false);
+                  IconView iv = new IconView(c, iconType);
+                  int s = Math.round(sizePx * 0.56f);
+                  addView(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+              }
+
+              @Override
+              protected void onFocusChanged(boolean gained, int direction, Rect previouslyFocusedRect) {
+                  super.onFocusChanged(gained, direction, previouslyFocusedRect);
+                  float sc = gained ? 1.12f : 1f;
+                  animate().scaleX(sc).scaleY(sc).setDuration(140).start();
+                  if (anim != null) anim.cancel();
+                  anim = ValueAnimator.ofFloat(focus, gained ? 1f : 0f);
+                  anim.setDuration(160);
+                  anim.addUpdateListener(a -> {
+                      focus = (Float) a.getAnimatedValue();
+                      invalidate();
+                  });
+                  anim.start();
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  super.onDraw(c);
+                  if (focus <= 0.01f) return;
+                  float w = getWidth();
+                  float h = getHeight();
+                  float cx = w / 2f;
+                  float cy = h / 2f;
+                  float outer = Math.min(w, h) / 2f;
+                  // O brilho ocupa a borda externa do proprio botao (nada passa dos limites da view).
+                  float glow = outer * 0.2f;
+                  float body = outer - glow;
+
+                  p.setShader(null);
+                  p.setStyle(Paint.Style.FILL);
+                  p.setColor(LED);
+                  p.setAlpha((int) (70 * focus));
+                  c.drawCircle(cx, cy, body, p);
+
+                  p.setStyle(Paint.Style.STROKE);
+                  p.setColor(LED);
+                  final int n = 5;
+                  float step = glow / n;
+                  p.setStrokeWidth(step + 0.6f);
+                  for (int i = n; i >= 1; i--) {
+                      float k = 1f - (i - 1f) / n;
+                      p.setAlpha((int) (255 * 0.45f * focus * k * k));
+                      c.drawCircle(cx, cy, body + (i - 0.5f) * step, p);
+                  }
+
+                  p.setStrokeWidth(ringPx);
+                  p.setColor(LED);
+                  p.setAlpha((int) (255 * focus));
+                  c.drawCircle(cx, cy, body - ringPx / 2f, p);
+                  p.setStrokeWidth(Math.max(1f, ringPx * 0.35f));
+                  p.setColor(LED_LIGHT);
+                  p.setAlpha((int) (200 * focus));
+                  c.drawCircle(cx, cy, body - ringPx / 2f, p);
+              }
+          }
+          EOF_FILE
           cat > painel/app/src/main/java/com/painel/lateral/Apps.java <<'EOF_FILE'
           package com.painel.lateral;
 
@@ -909,7 +1101,34 @@ jobs:
 
               private Apps() { }
 
-              static List<Entry> all(Context c) {
+              // A lista completa (com todos os icones e banners) e cara de montar. Ela fica guardada e so
+              // e refeita quando um app e instalado, removido ou atualizado (ou a cada 10 minutos).
+              private static List<Entry> cache;
+              private static long cacheTime;
+              private static int version;
+              private static final long CACHE_MS = 10 * 60 * 1000L;
+
+              static synchronized void invalidate() {
+                  cache = null;
+                  version++;
+              }
+
+              static synchronized int version() {
+                  return version;
+              }
+
+              static synchronized List<Entry> all(Context c) {
+                  long now = System.currentTimeMillis();
+                  if (cache != null && now - cacheTime < CACHE_MS) {
+                      return new ArrayList<>(cache);
+                  }
+                  List<Entry> fresh = load(c);
+                  cache = fresh;
+                  cacheTime = now;
+                  return new ArrayList<>(fresh);
+              }
+
+              private static List<Entry> load(Context c) {
                   PackageManager pm = c.getPackageManager();
                   Intent q = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
                   List<ResolveInfo> list = pm.queryIntentActivities(q, 0);
@@ -999,10 +1218,12 @@ jobs:
                           .edit().putString("order", sb.toString()).apply();
               }
 
+              // Abre o app na hora: intent proprio por abertura (o da lista e compartilhado) e sem trabalho extra.
               static void launch(Context c, Entry e) {
                   try {
-                      e.launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                      c.startActivity(e.launch);
+                      Intent i = new Intent(e.launch);
+                      i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                      c.startActivity(i);
                   } catch (Exception ex) {
                       // app indisponivel
                   }
@@ -1396,6 +1617,8 @@ jobs:
           import android.graphics.drawable.GradientDrawable;
           import android.media.AudioManager;
           import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.provider.Settings;
           import android.text.TextUtils;
           import android.util.TypedValue;
@@ -1434,6 +1657,22 @@ jobs:
               private int volMax;
               private int vol;
               private TextView volText;
+
+              // Brilho e volume somem sozinhos 5 segundos depois da ultima vez que o controle foi usado.
+              private static final long AUTO_CLOSE_MS = 5000L;
+              private final Handler autoCloseHandler = new Handler(Looper.getMainLooper());
+              private final Runnable autoCloseRun = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (!isFinishing()) finish();
+                  }
+              };
+
+              // (Re)inicia a contagem: cada toque nas setas dá mais 5 segundos.
+              private void armAutoClose() {
+                  autoCloseHandler.removeCallbacks(autoCloseRun);
+                  autoCloseHandler.postDelayed(autoCloseRun, AUTO_CLOSE_MS);
+              }
 
               private int dp(int v) {
                   return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
@@ -1514,6 +1753,7 @@ jobs:
               @Override
               protected void onDestroy() {
                   if (current == this) current = null;
+                  autoCloseHandler.removeCallbacks(autoCloseRun);
                   stopClockTicker();
                   super.onDestroy();
               }
@@ -1634,8 +1874,10 @@ jobs:
                   cp.bottomMargin = dp(42); root.addView(control, cp);
                   setContentView(root);
                   control.setFocusable(true); control.requestFocus();
+                  armAutoClose();
                   control.setOnKeyListener((v, key, ev) -> {
                       if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      armAutoClose();
                       if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
                           setLevel(level + (key == KeyEvent.KEYCODE_DPAD_RIGHT ? STEP : -STEP));
                           percent.setText(level + "%");
@@ -1736,8 +1978,10 @@ jobs:
                   cp.bottomMargin = dp(42); root.addView(control, cp);
                   setContentView(root);
                   control.setFocusable(true); control.requestFocus();
+                  armAutoClose();
                   control.setOnKeyListener((v, key, ev) -> {
                       if (ev.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      armAutoClose();
                       if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT) {
                           setVolume(vol + (key == KeyEvent.KEYCODE_DPAD_RIGHT ? volStep() : -volStep()));
                           percent.setText(volPercent() + "%");
@@ -1924,7 +2168,10 @@ jobs:
 
           import android.app.Activity;
           import android.app.AlertDialog;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
           import android.content.DialogInterface;
+          import android.content.IntentFilter;
           import android.content.Intent;
           import android.net.Uri;
           import android.content.pm.PackageManager;
@@ -1969,8 +2216,8 @@ jobs:
               private HorizontalScrollView dockScroll;
               private TextView arrowHint;
               private View focusAnchor;
-              private Tile gearButton;
-              private Tile wifiButton;
+              private HomeIconButton gearButton;
+              private HomeIconButton wifiButton;
               private boolean swallowUp = false;
               private int dockPadH = 0;
               private int tileWpx = 0;
@@ -1995,6 +2242,28 @@ jobs:
               private static final int WALL_MAX_H = 4320;
               private ImageView wallView;
 
+              // Reconstruir a fileira de apps e pesado. So refazemos quando algo realmente mudou
+              // (app instalado/removido, ordem ou apps escondidos).
+              private String builtSignature = null;
+              private final BroadcastReceiver packageReceiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      Apps.invalidate();
+                  }
+              };
+
+              private String dockSignature() {
+                  android.content.SharedPreferences sp = getSharedPreferences("launcher_apps", MODE_PRIVATE);
+                  java.util.Set<String> hs = sp.getStringSet("hidden", new java.util.HashSet<String>());
+                  return sp.getString("order", "") + "#" + new java.util.TreeSet<>(hs) + "#" + Apps.version();
+              }
+
+              private void ensureDock() {
+                  if (builtSignature == null || dock.getChildCount() == 0 || !builtSignature.equals(dockSignature())) {
+                      buildDock();
+                  }
+              }
+
               private int px(float v) {
                   return Math.round(v);
               }
@@ -2008,6 +2277,7 @@ jobs:
 
                   FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(0xFF000000);
+                  root.setClipChildren(false);
 
                   wallView = new ImageView(this);
                   wallView.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -2074,6 +2344,28 @@ jobs:
 
                   setContentView(root);
                   loadWallpaperAtStart();
+
+                  IntentFilter pf = new IntentFilter();
+                  pf.addAction(Intent.ACTION_PACKAGE_ADDED);
+                  pf.addAction(Intent.ACTION_PACKAGE_REMOVED);
+                  pf.addAction(Intent.ACTION_PACKAGE_REPLACED);
+                  pf.addAction(Intent.ACTION_PACKAGE_CHANGED);
+                  pf.addDataScheme("package");
+                  try {
+                      registerReceiver(packageReceiver, pf);
+                  } catch (Exception ex) {
+                      // sem receiver: a lista se renova sozinha a cada 10 minutos
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  try {
+                      unregisterReceiver(packageReceiver);
+                  } catch (Exception ex) {
+                      // ja removido
+                  }
+                  super.onDestroy();
               }
 
               private FrameLayout.LayoutParams topRight(float d, float right, float top) {
@@ -2084,16 +2376,9 @@ jobs:
                   return lp;
               }
 
-              private Tile circleButton(int icon, float d, Runnable action) {
-                  Tile t = new Tile(this, true, d / 2f, px(w * 0.0014f) + 2);
-                  GradientDrawable bg = new GradientDrawable();
-                  bg.setShape(GradientDrawable.OVAL);
-                  bg.setColor(0xE60E1016);
-                  t.setBackground(bg);
-                  t.setNeon(0xFF9A5CFF, 0xFF2D8CFF);
-                  IconView iv = new IconView(this, icon);
-                  int s = px(d * 0.5f);
-                  t.setContent(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+              // Sem circulo em volta: so o icone. O seletor (disco + anel LED) aparece quando o botao recebe o foco.
+              private HomeIconButton circleButton(int icon, float d, Runnable action) {
+                  HomeIconButton t = new HomeIconButton(this, icon, px(d), px(w * 0.0021f) + 2);
                   t.setOnClickListener(v -> action.run());
                   return t;
               }
@@ -2171,7 +2456,7 @@ jobs:
               @Override
               protected void onResume() {
                   super.onResume();
-                  buildDock();
+                  ensureDock();
                   if (!dockVisible && !moveMode && focusAnchor != null) focusAnchor.requestFocus();
               }
 
@@ -2181,7 +2466,7 @@ jobs:
                   // Home apertado de novo: volta para o primeiro item
                   lastIndex = 0;
                   hideDock();
-                  buildDock();
+                  ensureDock();
               }
 
               @Override
@@ -2190,6 +2475,7 @@ jobs:
               }
 
               private void buildDock() {
+                  builtSignature = dockSignature();
                   dock.removeAllViews();
                   visibleApps.clear();
                   float tileH = w * 0.075f;
@@ -2245,12 +2531,8 @@ jobs:
                   heading.setGravity(Gravity.CENTER_VERTICAL);
                   heading.setPadding(0,0,0,px(h*0.012f));
                   if (e.icon != null) {
-                      ImageView headingIcon = new ImageView(this);
-                      headingIcon.setImageDrawable(e.icon);
-                      headingIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                      headingIcon.setPadding(px(5),px(5),px(5),px(5));
-                      GradientDrawable iconBg = new GradientDrawable(); iconBg.setColor(0xFF252E3D); iconBg.setCornerRadius(px(w*0.009f));
-                      headingIcon.setBackground(iconBg); headingIcon.setClipToOutline(true);
+                      // Icone preenchendo todo o quadrado arredondado (sem moldura redonda nem quadradinho dentro).
+                      AppIcon headingIcon = new AppIcon(this, e.icon, 0.22f);
                       heading.addView(headingIcon, new LinearLayout.LayoutParams(px(w*0.045f), px(w*0.045f)));
                   }
                   TextView title = new TextView(this);
@@ -2277,7 +2559,7 @@ jobs:
                   }
               }
 
-              private void addMenuButton(LinearLayout box, String label, Runnable action) {
+              private TextView addMenuButton(LinearLayout box, String label, Runnable action) {
                   TextView b = new TextView(this);
                   b.setText(label); b.setTextColor(0xFFFFFFFF); b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
                   b.setGravity(Gravity.CENTER_VERTICAL); b.setFocusable(true); b.setPadding(px(w*0.012f), px(h*0.012f), px(w*0.012f), px(h*0.012f));
@@ -2285,6 +2567,7 @@ jobs:
                   LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT); lp.bottomMargin = px(h*0.006f); box.addView(b, lp);
                   b.setOnFocusChangeListener((v, f) -> { GradientDrawable g = new GradientDrawable(); g.setColor(f ? 0xFF1769AA : 0xFF202B3B); g.setCornerRadius(px(w*0.006f)); g.setStroke(px(f?2:1), ACCENT_BLUE); b.setBackground(g); });
                   b.setOnClickListener(v -> action.run());
+                  return b;
               }
 
               private void beginMoving(Apps.Entry e) {
@@ -2343,98 +2626,194 @@ jobs:
                   p.edit().putStringSet("hidden", hidden).apply(); lastIndex = 0; buildDock();
               }
 
+              // ---- Aplicativos escondidos ----
+
+              private GradientDrawable roundRect(int fill, int radius, int strokePx, int stroke) {
+                  GradientDrawable g = new GradientDrawable();
+                  g.setColor(fill);
+                  g.setCornerRadius(radius);
+                  if (strokePx > 0) g.setStroke(strokePx, stroke);
+                  return g;
+              }
+
+              // Botao de acao da lista (icone desenhado + texto), com foco bem visivel para o controle remoto.
+              private LinearLayout hiddenAction(int iconType, String label, boolean primary, Runnable onClick) {
+                  final int idleFill = primary ? 0xFF22507F : 0xFF2A3342;
+                  final int idleStroke = primary ? 0xFF3F72AE : 0xFF465369;
+                  final int radius = px(h * 0.012f);
+                  LinearLayout b = new LinearLayout(this);
+                  b.setOrientation(LinearLayout.HORIZONTAL);
+                  b.setGravity(Gravity.CENTER);
+                  b.setPadding(px(w * 0.009f), 0, px(w * 0.009f), 0);
+                  b.setFocusable(true);
+                  b.setClickable(true);
+                  b.setDefaultFocusHighlightEnabled(false);
+                  b.setId(View.generateViewId());
+                  b.setContentDescription(label);
+                  int is = px(h * 0.034f);
+                  b.addView(new IconView(this, iconType), new LinearLayout.LayoutParams(is, is));
+                  TextView t = new TextView(this);
+                  t.setText(label);
+                  t.setTextColor(0xFFFFFFFF);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                  t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  t.setSingleLine(true);
+                  LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  tl.leftMargin = px(w * 0.005f);
+                  b.addView(t, tl);
+                  b.setBackground(roundRect(idleFill, radius, px(1), idleStroke));
+                  b.setOnClickListener(v -> onClick.run());
+                  b.setTag(new int[] { idleFill, idleStroke, radius });
+                  return b;
+              }
+
+              private void styleHiddenAction(View b, boolean focused) {
+                  int[] t = (int[]) b.getTag();
+                  if (focused) b.setBackground(roundRect(0xFF1F7AE0, t[2], px(3), 0xFFFFFFFF));
+                  else b.setBackground(roundRect(t[0], t[2], px(1), t[1]));
+                  float sc = focused ? 1.06f : 1f;
+                  b.animate().scaleX(sc).scaleY(sc).setDuration(120).start();
+              }
+
               private void showHiddenApps() {
                   android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
                   java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>()));
-                  List<Apps.Entry> found = new ArrayList<>(); for (Apps.Entry e : Apps.all(this)) if (hidden.contains(e.pkg)) found.add(e);
-                  LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL); box.setPadding(px(w*0.018f),px(h*0.015f),px(w*0.018f),px(h*0.015f)); GradientDrawable hiddenDialogBg = new GradientDrawable(); hiddenDialogBg.setColor(0xFF10141C); hiddenDialogBg.setCornerRadius(px(w*0.018f)); box.setBackground(hiddenDialogBg);
-                  TextView title = new TextView(this); title.setText("Aplicativos escondidos"); title.setTextColor(0xFFFFFFFF); title.setTextSize(TypedValue.COMPLEX_UNIT_SP,22); title.setPadding(0,0,0,px(h*0.01f)); box.addView(title);
+                  List<Apps.Entry> found = new ArrayList<>();
+                  for (Apps.Entry e : Apps.all(this)) if (hidden.contains(e.pkg)) found.add(e);
+
+                  final int pad = px(w * 0.016f);
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(pad, px(h * 0.02f), pad, px(h * 0.016f));
+                  box.setBackground(roundRect(0xFF10141C, px(w * 0.018f), px(1), 0xFF2A3A55));
+
+                  TextView title = new TextView(this);
+                  title.setText("Aplicativos escondidos");
+                  title.setTextColor(0xFFFFFFFF);
+                  title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
+                  title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  box.addView(title);
+                  TextView sub = new TextView(this);
+                  sub.setText(found.isEmpty() ? "Quando você esconder um app, ele aparece aqui."
+                          : "Escolha um app para ele voltar à tela inicial.");
+                  sub.setTextColor(0xFF9AA7BC);
+                  sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+                  sub.setPadding(0, px(h * 0.004f), 0, px(h * 0.014f));
+                  box.addView(sub);
+
                   AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
-                  if (found.isEmpty()) { TextView empty = new TextView(this); empty.setText("Nenhum aplicativo escondido"); empty.setTextColor(0xFFCCCCCC); box.addView(empty); }
-                  java.util.ArrayList<View> restoreFocusTargets = new java.util.ArrayList<>();
-                  java.util.ArrayList<View> infoFocusTargets = new java.util.ArrayList<>();
-                  for (Apps.Entry e : found) {
-                      LinearLayout row = new LinearLayout(this);
-                      row.setOrientation(LinearLayout.HORIZONTAL);
-                      row.setGravity(Gravity.CENTER_VERTICAL);
-                      row.setPadding(px(w * 0.008f), px(h * 0.006f), px(w * 0.008f), px(h * 0.006f));
-                      GradientDrawable rowBg = new GradientDrawable();
-                      rowBg.setColor(0xFF202938);
-                      rowBg.setCornerRadius(px(w * 0.008f));
-                      row.setBackground(rowBg);
-                      row.setFocusable(false);
-                      LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, px(h * 0.075f));
-                      rowLp.bottomMargin = px(h * 0.006f);
-                      box.addView(row, rowLp);
 
-                      // Ícone e nome à esquerda, com recorte arredondado.
-                      ImageView appIcon = new ImageView(this);
-                      appIcon.setImageDrawable(e.icon);
-                      appIcon.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                      appIcon.setPadding(0, 0, 0, 0);
-                      GradientDrawable appIconBg = new GradientDrawable(); appIconBg.setColor(0xFF30394A); appIconBg.setCornerRadius(px(w * 0.013f));
-                      appIcon.setBackground(appIconBg);
-                      appIcon.setOutlineProvider(new android.view.ViewOutlineProvider() {
-                          @Override public void getOutline(View view, android.graphics.Outline outline) {
-                              outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), px(w * 0.013f));
+                  final int rowH = px(h * 0.105f);
+                  final int rowGap = px(h * 0.008f);
+                  final int inset = px(h * 0.006f);   // folga para o zoom do foco nao ser cortado
+                  ArrayList<View> restoreViews = new ArrayList<>();
+                  ArrayList<View> infoViews = new ArrayList<>();
+
+                  if (!found.isEmpty()) {
+                      LinearLayout rows = new LinearLayout(this);
+                      rows.setOrientation(LinearLayout.VERTICAL);
+                      rows.setPadding(inset, inset, inset, inset);
+                      for (Apps.Entry e : found) {
+                          LinearLayout row = new LinearLayout(this);
+                          row.setOrientation(LinearLayout.HORIZONTAL);
+                          row.setGravity(Gravity.CENTER_VERTICAL);
+                          row.setPadding(px(w * 0.008f), px(h * 0.008f), px(w * 0.008f), px(h * 0.008f));
+                          final int rowRadius = px(h * 0.016f);
+                          row.setBackground(roundRect(0xFF1A2130, rowRadius, 0, 0));
+                          LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, rowH);
+                          rowLp.bottomMargin = rowGap;
+                          rows.addView(row, rowLp);
+
+                          int is = rowH - px(h * 0.016f);
+                          if (e.icon != null) {
+                              AppIcon ic = new AppIcon(this, e.icon, 0.22f);
+                              row.addView(ic, new LinearLayout.LayoutParams(is, is));
+                          } else {
+                              row.addView(new View(this), new LinearLayout.LayoutParams(is, is));
                           }
-                      });
-                      appIcon.setClipToOutline(true);
-                      LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(px(w * 0.043f), px(w * 0.043f));
-                      iconLp.leftMargin = px(w * 0.004f); iconLp.rightMargin = px(w * 0.008f);
-                      row.addView(appIcon, iconLp);
 
-                      TextView name = new TextView(this);
-                      name.setText(e.label); name.setTextColor(0xFFFFFFFF); name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-                      name.setSingleLine(true); name.setEllipsize(android.text.TextUtils.TruncateAt.END); name.setGravity(Gravity.CENTER_VERTICAL);
-                      name.setFocusable(false); name.setClickable(false); name.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO); name.setId(View.generateViewId());
-                      name.setOnFocusChangeListener((v, focused) -> { GradientDrawable g = new GradientDrawable(); g.setColor(focused ? 0xFF263B57 : 0xFF202938); g.setCornerRadius(px(w * 0.008f)); g.setStroke(px(focused ? 2 : 0), focused ? 0xFF70C5FF : 0x00000000); row.setBackground(g); });
-                      row.addView(name, new LinearLayout.LayoutParams(0, -1, 1f));
+                          TextView name = new TextView(this);
+                          name.setText(e.label);
+                          name.setTextColor(0xFFFFFFFF);
+                          name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                          name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                          name.setSingleLine(true);
+                          name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                          name.setGravity(Gravity.CENTER_VERTICAL);
+                          LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(0, -1, 1f);
+                          nl.leftMargin = px(w * 0.010f);
+                          row.addView(name, nl);
 
-                      // Ações à direita, com foco visível para o controle remoto.
-                      TextView restore = new TextView(this);
-                      restore.setText("↩"); restore.setTextColor(0xFFFFFFFF); restore.setTextSize(TypedValue.COMPLEX_UNIT_SP, 23);
-                      restore.setGravity(Gravity.CENTER); restore.setContentDescription("Restaurar " + e.label); restore.setFocusable(true); restore.setClickable(true); restore.setId(View.generateViewId());
-                      GradientDrawable restoreBg = new GradientDrawable(); restoreBg.setColor(0xFF315B96); restoreBg.setCornerRadius(px(10)); restoreBg.setStroke(px(1), 0xFF587DB2); restore.setBackground(restoreBg);
-                      LinearLayout.LayoutParams restoreLp = new LinearLayout.LayoutParams(px(w * 0.043f), -1); restoreLp.leftMargin = px(w * 0.004f); row.addView(restore, restoreLp);
-                      restore.setOnFocusChangeListener((v, focused) -> { GradientDrawable g = new GradientDrawable(); g.setColor(focused ? 0xFF1769AA : 0xFF315B96); g.setCornerRadius(px(10)); g.setStroke(px(focused ? 3 : 1), focused ? 0xFF70C5FF : 0xFF587DB2); restore.setBackground(g); restore.setScaleX(focused ? 1.06f : 1f); restore.setScaleY(focused ? 1.06f : 1f); });
-                      restoreFocusTargets.add(restore);
-                      restore.setOnClickListener(v -> {
-                          java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE).getStringSet("hidden", new java.util.HashSet<>()));
-                          hset.remove(e.pkg); getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply();
-                          d.dismiss(); buildDock(); showHiddenApps();
-                      });
+                          LinearLayout restore = hiddenAction(IconView.RESTORE, "Mostrar", true, () -> {
+                              java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE)
+                                      .getStringSet("hidden", new java.util.HashSet<>()));
+                              hset.remove(e.pkg);
+                              getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply();
+                              d.dismiss();
+                              buildDock();
+                              Toasts.show(this, e.label + " voltou para a tela inicial", Toast.LENGTH_SHORT);
+                              showHiddenApps();
+                          });
+                          LinearLayout info = hiddenAction(IconView.INFO, "Detalhes", false, () -> openAppInfo(e));
+                          LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.WRAP_CONTENT, -1);
+                          bl.leftMargin = px(w * 0.006f);
+                          row.addView(restore, bl);
+                          row.addView(info, bl);
 
-                      TextView info = new TextView(this);
-                      info.setText("ⓘ"); info.setTextColor(0xFFFFFFFF); info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 21);
-                      info.setGravity(Gravity.CENTER); info.setContentDescription("Informações de " + e.label); info.setFocusable(true); info.setClickable(true); info.setId(View.generateViewId());
-                      GradientDrawable infoBg = new GradientDrawable(); infoBg.setColor(0xFF343D4D); infoBg.setCornerRadius(px(10)); infoBg.setStroke(px(1), 0xFF596579); info.setBackground(infoBg);
-                      LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(px(w * 0.043f), -1); infoLp.leftMargin = px(w * 0.004f); row.addView(info, infoLp);
-                      info.setOnFocusChangeListener((v, focused) -> { GradientDrawable g = new GradientDrawable(); g.setColor(focused ? 0xFF1769AA : 0xFF343D4D); g.setCornerRadius(px(10)); g.setStroke(px(focused ? 3 : 1), focused ? 0xFF70C5FF : 0xFF596579); info.setBackground(g); info.setScaleX(focused ? 1.06f : 1f); info.setScaleY(focused ? 1.06f : 1f); });
-                      infoFocusTargets.add(info);
-                      info.setOnClickListener(v -> openAppInfo(e));
-                      // O nome e o ícone são apenas informativos: o foco do controle remoto
-                      // entra diretamente nas ações Restaurar e Informações.
-                      restore.setNextFocusLeftId(restore.getId());
-                      restore.setNextFocusRightId(info.getId());
-                      info.setNextFocusLeftId(restore.getId());
-                      info.setNextFocusRightId(info.getId());
-                  }
-                  // Navegação vertical mantém a mesma coluna de ação entre os aplicativos.
-                  for (int i = 0; i < restoreFocusTargets.size(); i++) {
-                      View restoreTarget = restoreFocusTargets.get(i);
-                      View infoTarget = infoFocusTargets.get(i);
-                      if (i > 0) {
-                          restoreTarget.setNextFocusUpId(restoreFocusTargets.get(i - 1).getId());
-                          infoTarget.setNextFocusUpId(infoFocusTargets.get(i - 1).getId());
+                          final View.OnFocusChangeListener ch = (v, f) -> {
+                              styleHiddenAction(v, f);
+                              row.setBackground(f ? roundRect(0xFF22304A, rowRadius, px(2), 0xFF4C8DFF)
+                                      : roundRect(0xFF1A2130, rowRadius, 0, 0));
+                          };
+                          restore.setOnFocusChangeListener(ch);
+                          info.setOnFocusChangeListener(ch);
+                          restore.setNextFocusRightId(info.getId());
+                          restore.setNextFocusLeftId(restore.getId());
+                          info.setNextFocusLeftId(restore.getId());
+                          info.setNextFocusRightId(info.getId());
+                          restoreViews.add(restore);
+                          infoViews.add(info);
                       }
-                      if (i + 1 < restoreFocusTargets.size()) {
-                          restoreTarget.setNextFocusDownId(restoreFocusTargets.get(i + 1).getId());
-                          infoTarget.setNextFocusDownId(infoFocusTargets.get(i + 1).getId());
+                      for (int i = 0; i < restoreViews.size(); i++) {
+                          if (i > 0) {
+                              restoreViews.get(i).setNextFocusUpId(restoreViews.get(i - 1).getId());
+                              infoViews.get(i).setNextFocusUpId(infoViews.get(i - 1).getId());
+                          }
+                          if (i + 1 < restoreViews.size()) {
+                              restoreViews.get(i).setNextFocusDownId(restoreViews.get(i + 1).getId());
+                              infoViews.get(i).setNextFocusDownId(infoViews.get(i + 1).getId());
+                          }
                       }
+
+                      ScrollView scroll = new ScrollView(this);
+                      scroll.setVerticalScrollBarEnabled(false);
+                      scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                      scroll.setFocusable(false);
+                      scroll.addView(rows, new FrameLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                      int wanted = found.size() * (rowH + rowGap) + inset * 2;
+                      int shown = Math.min(wanted, px(h * 0.52f));
+                      box.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, shown));
                   }
-                  addMenuButton(box, "Fechar", d::dismiss); d.show(); if (d.getWindow()!=null) { GradientDrawable winBg = new GradientDrawable(); winBg.setColor(0xFF10141C); winBg.setCornerRadius(px(w*0.018f)); d.getWindow().setBackgroundDrawable(winBg); d.getWindow().setLayout((int)(w*0.48f), (int)(h*0.72f)); }
-                  if (!found.isEmpty() && !restoreFocusTargets.isEmpty()) restoreFocusTargets.get(0).requestFocus();
+
+                  TextView close = addMenuButton(box, "Fechar", d::dismiss);
+                  close.setGravity(Gravity.CENTER);
+                  close.setId(View.generateViewId());
+                  if (!restoreViews.isEmpty()) {
+                      int last = restoreViews.size() - 1;
+                      restoreViews.get(last).setNextFocusDownId(close.getId());
+                      infoViews.get(last).setNextFocusDownId(close.getId());
+                      close.setNextFocusUpId(restoreViews.get(last).getId());
+                  }
+                  d.show();
+                  if (d.getWindow() != null) {
+                      d.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
+                      d.getWindow().setLayout((int) (w * 0.5f), ViewGroup.LayoutParams.WRAP_CONTENT);
+                  }
+                  if (!restoreViews.isEmpty()) restoreViews.get(0).requestFocus();
+                  else close.requestFocus();
               }
 
               private void openAppInfo(Apps.Entry e) {
@@ -3309,13 +3688,60 @@ jobs:
                   sp(c).edit().putBoolean("enabled", v).apply();
               }
 
-              // true = aparece sobre todos os apps; false = so dentro do launcher.
-              static boolean pinned(Context c) {
-                  return sp(c).getBoolean("pinned", true);
+              // Onde o relogio aparece: em tudo, so na tela inicial da launcher ou so nos apps.
+              static final int PIN_ALL = 0;
+              static final int PIN_LAUNCHER = 1;
+              static final int PIN_APPS = 2;
+              // Ordem em que as setas / OK percorrem as opcoes.
+              static final int[] PIN_ORDER = { PIN_ALL, PIN_APPS, PIN_LAUNCHER };
+              static final String[] PIN_NAMES = {
+                      "Todas as telas", "Só nos apps · oculto na inicial", "Só na tela inicial"
+              };
+
+              static int pinMode(Context c) {
+                  SharedPreferences s = sp(c);
+                  if (s.contains("pin_mode")) return clamp(s.getInt("pin_mode", PIN_ALL), 0, 2);
+                  // versao antiga guardava so "pinned" (true = tudo, false = so launcher)
+                  return s.getBoolean("pinned", true) ? PIN_ALL : PIN_LAUNCHER;
               }
 
-              static void setPinned(Context c, boolean v) {
-                  sp(c).edit().putBoolean("pinned", v).apply();
+              static void setPinMode(Context c, int v) {
+                  sp(c).edit().putInt("pin_mode", clamp(v, 0, 2)).apply();
+              }
+
+              static String pinName(Context c) {
+                  int m = pinMode(c);
+                  for (int i = 0; i < PIN_ORDER.length; i++) if (PIN_ORDER[i] == m) return PIN_NAMES[i];
+                  return PIN_NAMES[0];
+              }
+
+              // Avanca (+1) ou volta (-1) na lista de opcoes, dando a volta no fim.
+              static void stepPinMode(Context c, int dir) {
+                  int m = pinMode(c);
+                  int idx = 0;
+                  for (int i = 0; i < PIN_ORDER.length; i++) if (PIN_ORDER[i] == m) idx = i;
+                  int n = PIN_ORDER.length;
+                  setPinMode(c, PIN_ORDER[((idx + dir) % n + n) % n]);
+              }
+
+              // Copia de tudo o que esta salvo; usada pela tela de ajustes para poder descartar alteracoes.
+              static java.util.Map<String, Object> snapshot(Context c) {
+                  return new java.util.HashMap<String, Object>(sp(c).getAll());
+              }
+
+              // Volta exatamente ao que estava na copia (apaga o que foi criado depois dela).
+              static void restore(Context c, java.util.Map<String, Object> snap) {
+                  SharedPreferences.Editor ed = sp(c).edit().clear();
+                  for (java.util.Map.Entry<String, Object> en : snap.entrySet()) {
+                      Object v = en.getValue();
+                      String k = en.getKey();
+                      if (v instanceof Boolean) ed.putBoolean(k, (Boolean) v);
+                      else if (v instanceof Integer) ed.putInt(k, (Integer) v);
+                      else if (v instanceof Long) ed.putLong(k, (Long) v);
+                      else if (v instanceof Float) ed.putFloat(k, (Float) v);
+                      else if (v instanceof String) ed.putString(k, (String) v);
+                  }
+                  ed.apply();
               }
 
               static int posX(Context c) {
@@ -3398,6 +3824,8 @@ jobs:
           import android.graphics.PixelFormat;
           import android.graphics.Typeface;
           import android.graphics.drawable.GradientDrawable;
+          import android.os.Handler;
+          import android.os.Looper;
           import android.text.format.DateFormat;
           import android.util.DisplayMetrics;
           import android.util.TypedValue;
@@ -3422,6 +3850,13 @@ jobs:
               private boolean receiverOn;
               private boolean suppressed;
               private boolean fgOwn = true;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final Runnable deferredRefresh = new Runnable() {
+                  @Override
+                  public void run() {
+                      refresh();
+                  }
+              };
 
               private final BroadcastReceiver receiver = new BroadcastReceiver() {
                   @Override
@@ -3449,7 +3884,19 @@ jobs:
               }
 
               private boolean shouldShow() {
-                  return ClockPrefs.enabled(ctx) && !suppressed && (ClockPrefs.pinned(ctx) || fgOwn);
+                  return ClockPrefs.enabled(ctx) && !suppressed && allowedHere();
+              }
+
+              // Todas as telas / so nos apps (some na tela inicial) / so na tela inicial.
+              private boolean allowedHere() {
+                  switch (ClockPrefs.pinMode(ctx)) {
+                      case ClockPrefs.PIN_APPS:
+                          return !fgOwn;
+                      case ClockPrefs.PIN_LAUNCHER:
+                          return fgOwn;
+                      default:
+                          return true;
+                  }
               }
 
               // Reaplica tudo (liga, desliga, estilo, posicao). Nunca lanca excecao.
@@ -3475,12 +3922,17 @@ jobs:
                   refresh();
               }
 
-              // Chamado a cada troca de janela. Com "fixar" desligado, o relogio so aparece no proprio launcher.
+              // Chamado a cada troca de janela. Nos modos "so nos apps" e "so na tela inicial" o relogio
+              // entra/sai conforme o app em uso. A troca espera um instante para nao competir com a
+              // animacao de abertura do app (criar/remover janela de sobreposicao nessa hora deixava a abertura lenta).
               void onForeground(String pkg) {
                   boolean own = pkg != null && pkg.equals(ctx.getPackageName());
                   if (own == fgOwn) return;
                   fgOwn = own;
-                  if (!ClockPrefs.pinned(ctx)) refresh();
+                  if (ClockPrefs.pinMode(ctx) != ClockPrefs.PIN_ALL) {
+                      handler.removeCallbacks(deferredRefresh);
+                      handler.postDelayed(deferredRefresh, 350L);
+                  }
               }
 
               // Mantem o relogio acima da camada de brilho quando ela e criada depois.
@@ -3495,6 +3947,7 @@ jobs:
               }
 
               void destroy() {
+                  handler.removeCallbacks(deferredRefresh);
                   detach();
                   view = null;
                   lp = null;
@@ -3641,11 +4094,13 @@ jobs:
           import java.util.Calendar;
           import java.util.List;
           import java.util.Locale;
+          import java.util.Map;
           import java.util.function.Supplier;
 
           // Tela de configuracao do relogio flutuante. 100% controlada por D-pad (sem toque).
           // Esquerda/direita ajusta o valor da linha, OK alterna/avanca. Toda mudanca vale na hora
-          // (o relogio de verdade ja aparece por cima desta tela) e fica gravada.
+          // (o relogio de verdade ja aparece por cima desta tela), mas so FICA GRAVADA se apertar "Salvar".
+          // Sair sem salvar (Voltar, Home, abrir outro app) devolve tudo ao que estava antes de mexer.
           public class ClockSettingsActivity extends Activity {
               private interface Step {
                   void apply(int dir);
@@ -3659,6 +4114,10 @@ jobs:
               private TextView warning;
               private View warningButton;
               private View firstRow;
+              // Copia do que estava salvo ao abrir a tela; e para ela que voltamos se sair sem salvar.
+              private Map<String, Object> snapshot;
+              private boolean saved;
+              private boolean leavingForAccessibility;
 
               private final Runnable tick = new Runnable() {
                   @Override
@@ -3706,6 +4165,7 @@ jobs:
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  snapshot = ClockPrefs.snapshot(this);
 
                   FrameLayout root = new FrameLayout(this);
                   root.setBackgroundColor(0xFF0B0E13);
@@ -3727,8 +4187,10 @@ jobs:
                   column.addView(warning);
                   warningButton = button("Abrir ajustes de acessibilidade", () -> {
                       try {
+                          leavingForAccessibility = true;
                           startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
                       } catch (Exception e) {
+                          leavingForAccessibility = false;
                           Toasts.show(this, "Não disponível nesta TV", Toast.LENGTH_SHORT);
                       }
                   });
@@ -3756,9 +4218,10 @@ jobs:
                   View reset = button("Restaurar padrão", () -> {
                       ClockPrefs.resetAppearance(this);
                       commit();
-                      Toasts.show(this, "Posição, tamanho e cores restaurados", Toast.LENGTH_SHORT);
+                      Toasts.show(this, "Padrão restaurado. Aperte Salvar para manter", Toast.LENGTH_SHORT);
                   });
                   View save = button("Salvar", () -> {
+                      saved = true;
                       commit();
                       Toasts.show(this, "Configurações salvas", Toast.LENGTH_SHORT);
                       finish();
@@ -3795,14 +4258,14 @@ jobs:
                               hintIfServiceOff();
                           });
 
-                  addRow("Fixar em todas as telas",
-                          () -> ClockPrefs.pinned(this) ? "Sim, sobre qualquer app" : "Não, só no launcher",
+                  addRow("Onde fixar o relógio",
+                          () -> "‹   " + ClockPrefs.pinName(this) + "   ›",
                           dir -> {
-                              ClockPrefs.setPinned(this, dir > 0);
+                              ClockPrefs.stepPinMode(this, dir);
                               commit();
                           },
                           () -> {
-                              ClockPrefs.setPinned(this, !ClockPrefs.pinned(this));
+                              ClockPrefs.stepPinMode(this, 1);
                               commit();
                           });
 
@@ -3941,9 +4404,37 @@ jobs:
                   warningButton.setVisibility(vis);
               }
 
+              // Volta tudo ao que estava salvo antes de abrir esta tela e atualiza o relogio de verdade.
+              private void revertUnsaved() {
+                  if (saved || snapshot == null) return;
+                  if (!snapshot.equals(ClockPrefs.snapshot(this))) {
+                      ClockPrefs.restore(this, snapshot);
+                      PanelService s = PanelService.instance;
+                      if (s != null) s.refreshClock();
+                  }
+              }
+
+              // Voltar = descartar o que foi mexido e nao salvo.
+              @Override
+              public void onBackPressed() {
+                  boolean changed = !saved && snapshot != null && !snapshot.equals(ClockPrefs.snapshot(this));
+                  revertUnsaved();
+                  if (changed) Toasts.show(this, "Alterações descartadas", Toast.LENGTH_SHORT);
+                  finish();
+              }
+
+              // Saiu da tela (Home, outro app...) sem salvar: nada fica gravado.
+              // A ida para os ajustes de acessibilidade e a unica saida que mantem o que foi mexido.
+              @Override
+              protected void onStop() {
+                  if (!leavingForAccessibility) revertUnsaved();
+                  super.onStop();
+              }
+
               @Override
               protected void onResume() {
                   super.onResume();
+                  leavingForAccessibility = false;
                   updateWarning();
                   refreshValues();
                   handler.removeCallbacks(tick);
