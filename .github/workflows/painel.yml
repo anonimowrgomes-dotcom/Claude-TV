@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 17
-                  versionName '2.4'
+                  versionCode 18
+                  versionName '2.5'
               }
 
               compileOptions {
@@ -116,6 +116,14 @@ jobs:
                   <activity
                       android:name=".LauncherSettingsActivity"
                       android:exported="false"
+                      android:theme="@style/HomeTheme" />
+
+                  <activity
+                      android:name=".ClockSettingsActivity"
+                      android:exported="false"
+                      android:excludeFromRecents="true"
+                      android:launchMode="singleTask"
+                      android:taskAffinity=""
                       android:theme="@style/HomeTheme" />
 
                   <activity
@@ -1117,6 +1125,7 @@ jobs:
               static PanelService instance;
 
               private View dimView;
+              private ClockOverlay clock;
 
               // ---- Protetor de tela automatico ----
               private static final long IDLE_MS = 5 * 60 * 1000L;   // 5 minutos parado
@@ -1146,8 +1155,10 @@ jobs:
               protected void onServiceConnected() {
                   super.onServiceConnected();
                   instance = this;
+                  clock = new ClockOverlay(this);
                   applyBrightness(Prefs.brightness(this));
                   startIdleWatcher();
+                  clock.refresh();
               }
 
               @Override
@@ -1155,6 +1166,10 @@ jobs:
                   instance = null;
                   stopIdleWatcher();
                   removeDim();
+                  if (clock != null) {
+                      clock.destroy();
+                      clock = null;
+                  }
                   return super.onUnbind(intent);
               }
 
@@ -1162,6 +1177,10 @@ jobs:
               public void onDestroy() {
                   stopIdleWatcher();
                   removeDim();
+                  if (clock != null) {
+                      clock.destroy();
+                      clock = null;
+                  }
                   super.onDestroy();
               }
 
@@ -1174,6 +1193,7 @@ jobs:
                   String pkg = event.getPackageName() == null ? "" : event.getPackageName().toString();
                   if (cls.contains("Dream")) {
                       dreaming = true;
+                      if (clock != null) clock.setSuppressed(true);
                       // Escurece bastante durante o descanso usando a mesma camada de brilho.
                       applyBrightness(5);
                       return;
@@ -1182,6 +1202,7 @@ jobs:
                   if (pkg.equals(getPackageName()) && cls.endsWith("PanelActivity")) return;
                   if (pkg.equals("com.android.systemui") || pkg.equals("android") || pkg.isEmpty()) return;
                   fgPackage = pkg;
+                  if (clock != null) clock.onForeground(pkg);
                   lastActivity = SystemClock.elapsedRealtime();
               }
 
@@ -1212,6 +1233,7 @@ jobs:
                                   PixelFormat.TRANSLUCENT);
                           wm.addView(v, lp);
                           dimView = v;
+                          if (clock != null) clock.bringToFront();
                       }
                       dimView.setAlpha(alpha);
                   } catch (Exception e) {
@@ -1219,10 +1241,16 @@ jobs:
                   }
               }
 
+              // Chamado pela tela de configuracao do relogio para aplicar a mudanca na hora.
+              void refreshClock() {
+                  if (clock != null) clock.refresh();
+              }
+
               private void noteActivity() {
                   lastActivity = SystemClock.elapsedRealtime();
                   if (dreaming) {
                       dreaming = false;
+                      if (clock != null) clock.setSuppressed(false);
                       // Restaura o nível configurado quando o usuário acorda a TV.
                       applyBrightness(Prefs.brightness(this));
                   }
@@ -1274,6 +1302,7 @@ jobs:
                   }
                   if (Screensaver.start(this)) {
                       dreaming = true;
+                      if (clock != null) clock.setSuppressed(true);
                   } else {
                       lastActivity = now;
                   }
@@ -1473,6 +1502,7 @@ jobs:
                   row(IconView.CLOCK, "Protetor de tela", this::startScreensaver);
                   row(IconView.WIFI, "Wi-Fi", () -> open(new Intent(Settings.ACTION_WIFI_SETTINGS)));
                   row(IconView.GEAR, "Configurações", () -> open(new Intent(Settings.ACTION_SETTINGS)));
+                  clockRow();
 
                   panelBar.setAlpha(0f);
                   panelBar.setTranslationX(dp(40));
@@ -1484,6 +1514,7 @@ jobs:
               @Override
               protected void onDestroy() {
                   if (current == this) current = null;
+                  stopClockTicker();
                   super.onDestroy();
               }
 
@@ -1733,6 +1764,73 @@ jobs:
                       return;
                   }
                   if (volText != null) volText.setText("Volume " + volPercent() + "%");
+              }
+
+              // ---------------- Horário (relógio flutuante) ----------------
+
+              private TextView clockBubbleText;
+              private android.os.Handler clockHandler;
+              private Runnable clockTick;
+
+              // A "bolha" do item mostra a hora atual e se atualiza sozinha; OK abre a tela de configuração.
+              private void clockRow() {
+                  LinearLayout item = new LinearLayout(this);
+                  item.setOrientation(LinearLayout.VERTICAL);
+                  item.setGravity(Gravity.CENTER);
+                  item.setPadding(dp(4), dp(5), dp(4), dp(5));
+
+                  FrameLayout bubble = new FrameLayout(this);
+                  GradientDrawable bubbleBg = new GradientDrawable();
+                  bubbleBg.setShape(GradientDrawable.OVAL);
+                  bubbleBg.setColor(0x222B3444);
+                  bubbleBg.setStroke(dp(1), 0x333D7BFF);
+                  bubble.setBackground(bubbleBg);
+
+                  clockBubbleText = new TextView(this);
+                  clockBubbleText.setText(ClockOverlay.timeText(this));
+                  clockBubbleText.setTextColor(0xFFFFFFFF);
+                  clockBubbleText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  clockBubbleText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                  clockBubbleText.setSingleLine(true);
+                  clockBubbleText.setGravity(Gravity.CENTER);
+                  bubble.addView(clockBubbleText, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+                  item.addView(bubble, new LinearLayout.LayoutParams(dp(54), dp(54)));
+
+                  TextView caption = label("Horário");
+                  caption.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+                  caption.setGravity(Gravity.CENTER);
+                  LinearLayout.LayoutParams captionLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  captionLp.topMargin = dp(4);
+                  item.addView(caption, captionLp);
+
+                  item.setFocusable(true);
+                  item.setOnClickListener(v -> open(new Intent(this, ClockSettingsActivity.class)));
+                  focusStyle(item);
+                  addToPanel(item);
+                  startClockTicker();
+              }
+
+              // Atualiza a hora do item na virada de cada minuto (sem timer a cada segundo).
+              private void startClockTicker() {
+                  clockHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+                  clockTick = new Runnable() {
+                      @Override
+                      public void run() {
+                          if (clockBubbleText != null) {
+                              clockBubbleText.setText(ClockOverlay.timeText(PanelActivity.this));
+                          }
+                          long now = System.currentTimeMillis();
+                          clockHandler.postDelayed(this, 60000L - (now % 60000L) + 50L);
+                      }
+                  };
+                  long now = System.currentTimeMillis();
+                  clockHandler.postDelayed(clockTick, 60000L - (now % 60000L) + 50L);
+              }
+
+              private void stopClockTicker() {
+                  if (clockHandler != null && clockTick != null) clockHandler.removeCallbacks(clockTick);
               }
 
               // ---------------- Aplicativos ----------------
@@ -3157,6 +3255,705 @@ jobs:
                       return true;
                   }
                   return super.onKeyDown(keyCode, event);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/ClockPrefs.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          // Configuracoes do relogio flutuante (arquivo proprio, nao mexe nas preferencias "painel").
+          final class ClockPrefs {
+              static final int[] NUMBER_COLORS = {
+                      0xFFFFFFFF, 0xFFFFEB3B, 0xFF69F0AE, 0xFF40C4FF, 0xFF82B1FF,
+                      0xFFFFAB40, 0xFFFF5252, 0xFFFF80AB, 0xFFB0BEC5, 0xFF000000
+              };
+              static final String[] NUMBER_COLOR_NAMES = {
+                      "Branco", "Amarelo", "Verde", "Ciano", "Azul claro",
+                      "Laranja", "Vermelho", "Rosa", "Cinza", "Preto"
+              };
+
+              // O primeiro item (transparente) e o padrao.
+              static final int[] BG_COLORS = {
+                      0x00000000, 0xFF000000, 0xFF263238, 0xFF0D47A1, 0xFFB71C1C, 0xFF1B5E20, 0xFFFFFFFF
+              };
+              static final String[] BG_NAMES = {
+                      "Transparente", "Preto", "Cinza escuro", "Azul escuro",
+                      "Vermelho escuro", "Verde escuro", "Branco"
+              };
+
+              static final int SIZE_MIN = 1;
+              static final int SIZE_MAX = 30;
+              static final int SIZE_DEFAULT = 6;
+              static final int POS_X_DEFAULT = 50;   // centro
+              static final int POS_Y_DEFAULT = 0;    // topo
+              static final int BG_TRANSPARENCY_DEFAULT = 40;
+
+              private ClockPrefs() { }
+
+              private static SharedPreferences sp(Context c) {
+                  return c.getSharedPreferences("painel_clock", Context.MODE_PRIVATE);
+              }
+
+              private static int clamp(int v, int lo, int hi) {
+                  return Math.max(lo, Math.min(hi, v));
+              }
+
+              static boolean enabled(Context c) {
+                  return sp(c).getBoolean("enabled", false);
+              }
+
+              static void setEnabled(Context c, boolean v) {
+                  sp(c).edit().putBoolean("enabled", v).apply();
+              }
+
+              // true = aparece sobre todos os apps; false = so dentro do launcher.
+              static boolean pinned(Context c) {
+                  return sp(c).getBoolean("pinned", true);
+              }
+
+              static void setPinned(Context c, boolean v) {
+                  sp(c).edit().putBoolean("pinned", v).apply();
+              }
+
+              static int posX(Context c) {
+                  return clamp(sp(c).getInt("pos_x", POS_X_DEFAULT), 0, 100);
+              }
+
+              static void setPosX(Context c, int v) {
+                  sp(c).edit().putInt("pos_x", clamp(v, 0, 100)).apply();
+              }
+
+              static int posY(Context c) {
+                  return clamp(sp(c).getInt("pos_y", POS_Y_DEFAULT), 0, 100);
+              }
+
+              static void setPosY(Context c, int v) {
+                  sp(c).edit().putInt("pos_y", clamp(v, 0, 100)).apply();
+              }
+
+              static int size(Context c) {
+                  return clamp(sp(c).getInt("size", SIZE_DEFAULT), SIZE_MIN, SIZE_MAX);
+              }
+
+              static void setSize(Context c, int v) {
+                  sp(c).edit().putInt("size", clamp(v, SIZE_MIN, SIZE_MAX)).apply();
+              }
+
+              static int colorIndex(Context c) {
+                  return clamp(sp(c).getInt("color", 0), 0, NUMBER_COLORS.length - 1);
+              }
+
+              static void setColorIndex(Context c, int v) {
+                  sp(c).edit().putInt("color", clamp(v, 0, NUMBER_COLORS.length - 1)).apply();
+              }
+
+              static int numberColor(Context c) {
+                  return NUMBER_COLORS[colorIndex(c)];
+              }
+
+              static int bgIndex(Context c) {
+                  return clamp(sp(c).getInt("bg", 0), 0, BG_COLORS.length - 1);
+              }
+
+              static void setBgIndex(Context c, int v) {
+                  sp(c).edit().putInt("bg", clamp(v, 0, BG_COLORS.length - 1)).apply();
+              }
+
+              // 0 = fundo solido, 100 = fundo totalmente transparente.
+              static int bgTransparency(Context c) {
+                  return clamp(sp(c).getInt("bg_transp", BG_TRANSPARENCY_DEFAULT), 0, 100);
+              }
+
+              static void setBgTransparency(Context c, int v) {
+                  sp(c).edit().putInt("bg_transp", clamp(v, 0, 100)).apply();
+              }
+
+              // Cor final do fundo (ARGB). Alpha 0 = sem fundo.
+              static int backgroundArgb(Context c) {
+                  int idx = bgIndex(c);
+                  if (idx == 0) return 0;
+                  int alpha = Math.round(255f * (100 - bgTransparency(c)) / 100f);
+                  return (alpha << 24) | (BG_COLORS[idx] & 0x00FFFFFF);
+              }
+
+              // Volta posicao, tamanho, cor e fundo ao padrao. Nao desliga o relogio.
+              static void resetAppearance(Context c) {
+                  sp(c).edit()
+                          .remove("pos_x").remove("pos_y").remove("size")
+                          .remove("color").remove("bg").remove("bg_transp")
+                          .apply();
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/ClockOverlay.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.graphics.PixelFormat;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.text.format.DateFormat;
+          import android.util.DisplayMetrics;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.widget.TextView;
+
+          import java.util.Calendar;
+          import java.util.Locale;
+
+          // Relogio flutuante. E uma janela de sobreposicao do servico de acessibilidade (TYPE_ACCESSIBILITY_OVERLAY),
+          // a mesma camada que o "Brilho" ja usa: fica por cima de qualquer app, sem precisar da permissao
+          // "Exibir sobre outros apps" e sem notificacao de servico em primeiro plano.
+          // Atualiza com o broadcast TIME_TICK (1x por minuto), entao nao ha timer rodando.
+          final class ClockOverlay {
+              private final Context ctx;
+              private final WindowManager wm;
+              private TextView view;
+              private WindowManager.LayoutParams lp;
+              private boolean attached;
+              private boolean receiverOn;
+              private boolean suppressed;
+              private boolean fgOwn = true;
+
+              private final BroadcastReceiver receiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      update();
+                  }
+              };
+
+              ClockOverlay(Context ctx) {
+                  this.ctx = ctx;
+                  this.wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+              }
+
+              // "HH:mm" (24h) ou "h:mm" (12h), conforme a configuracao da TV.
+              static String timeText(Context c) {
+                  Calendar cal = Calendar.getInstance();
+                  int h = cal.get(Calendar.HOUR_OF_DAY);
+                  int m = cal.get(Calendar.MINUTE);
+                  if (DateFormat.is24HourFormat(c)) {
+                      return String.format(Locale.US, "%02d:%02d", h, m);
+                  }
+                  h = h % 12;
+                  if (h == 0) h = 12;
+                  return String.format(Locale.US, "%d:%02d", h, m);
+              }
+
+              private boolean shouldShow() {
+                  return ClockPrefs.enabled(ctx) && !suppressed && (ClockPrefs.pinned(ctx) || fgOwn);
+              }
+
+              // Reaplica tudo (liga, desliga, estilo, posicao). Nunca lanca excecao.
+              void refresh() {
+                  try {
+                      if (!shouldShow()) {
+                          detach();
+                          return;
+                      }
+                      if (!attached) attach();
+                      if (!attached) return;
+                      applyStyle();
+                      update();
+                  } catch (Exception e) {
+                      // o relogio nunca pode derrubar o servico nem o launcher
+                  }
+              }
+
+              // Esconde enquanto o protetor de tela estiver ativo.
+              void setSuppressed(boolean s) {
+                  if (suppressed == s) return;
+                  suppressed = s;
+                  refresh();
+              }
+
+              // Chamado a cada troca de janela. Com "fixar" desligado, o relogio so aparece no proprio launcher.
+              void onForeground(String pkg) {
+                  boolean own = pkg != null && pkg.equals(ctx.getPackageName());
+                  if (own == fgOwn) return;
+                  fgOwn = own;
+                  if (!ClockPrefs.pinned(ctx)) refresh();
+              }
+
+              // Mantem o relogio acima da camada de brilho quando ela e criada depois.
+              void bringToFront() {
+                  if (!attached || view == null) return;
+                  try {
+                      wm.removeViewImmediate(view);
+                      wm.addView(view, lp);
+                  } catch (Exception e) {
+                      attached = false;
+                  }
+              }
+
+              void destroy() {
+                  detach();
+                  view = null;
+                  lp = null;
+              }
+
+              private void attach() {
+                  if (view == null) {
+                      view = new TextView(ctx);
+                      view.setSingleLine(true);
+                      view.setIncludeFontPadding(false);
+                      view.setGravity(Gravity.CENTER);
+                      view.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  }
+                  if (lp == null) {
+                      lp = new WindowManager.LayoutParams(
+                              WindowManager.LayoutParams.WRAP_CONTENT,
+                              WindowManager.LayoutParams.WRAP_CONTENT,
+                              WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                      | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                      | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                                      | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                              PixelFormat.TRANSLUCENT);
+                      lp.gravity = Gravity.TOP | Gravity.LEFT;
+                      lp.setTitle("TVzkRelogio");
+                  }
+                  applyStyle();
+                  view.setText(timeText(ctx));
+                  position();
+                  try {
+                      wm.addView(view, lp);
+                      attached = true;
+                  } catch (Exception e) {
+                      attached = false;
+                      return;
+                  }
+                  registerTicks();
+              }
+
+              private void detach() {
+                  if (receiverOn) {
+                      try {
+                          ctx.unregisterReceiver(receiver);
+                      } catch (Exception e) {
+                          // ja removido
+                      }
+                      receiverOn = false;
+                  }
+                  if (attached && view != null) {
+                      try {
+                          wm.removeViewImmediate(view);
+                      } catch (Exception e) {
+                          // ja removida
+                      }
+                  }
+                  attached = false;
+              }
+
+              private void registerTicks() {
+                  if (receiverOn) return;
+                  IntentFilter f = new IntentFilter();
+                  f.addAction(Intent.ACTION_TIME_TICK);
+                  f.addAction(Intent.ACTION_TIME_CHANGED);
+                  f.addAction(Intent.ACTION_TIMEZONE_CHANGED);
+                  f.addAction(Intent.ACTION_SCREEN_ON);
+                  try {
+                      ctx.registerReceiver(receiver, f);
+                      receiverOn = true;
+                  } catch (Exception e) {
+                      receiverOn = false;
+                  }
+              }
+
+              private void applyStyle() {
+                  float sh = ctx.getResources().getDisplayMetrics().heightPixels;
+                  float px = sh * (0.008f + 0.004f * ClockPrefs.size(ctx));
+                  view.setTextSize(TypedValue.COMPLEX_UNIT_PX, px);
+                  view.setTextColor(ClockPrefs.numberColor(ctx));
+                  // sombra suave so para o numero nao sumir sobre cenas claras; nao e borda nem contorno
+                  view.setShadowLayer(px * 0.06f, 0f, px * 0.03f, 0x99000000);
+                  int padH = Math.round(px * 0.45f);
+                  int padV = Math.round(px * 0.15f);
+                  view.setPadding(padH, padV, padH, padV);
+                  int bg = ClockPrefs.backgroundArgb(ctx);
+                  if ((bg >>> 24) == 0) {
+                      view.setBackground(null);
+                  } else {
+                      GradientDrawable d = new GradientDrawable();
+                      d.setColor(bg);
+                      d.setCornerRadius(px * 0.28f);
+                      view.setBackground(d);
+                  }
+              }
+
+              // Posicao em % do espaco livre (0..100), com uma margem de seguranca de 2% da altura.
+              private void position() {
+                  DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+                  view.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                          View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+                  int vw = view.getMeasuredWidth();
+                  int vh = view.getMeasuredHeight();
+                  int margin = Math.round(dm.heightPixels * 0.02f);
+                  int freeX = Math.max(0, dm.widthPixels - vw - 2 * margin);
+                  int freeY = Math.max(0, dm.heightPixels - vh - 2 * margin);
+                  lp.x = margin + Math.round(freeX * ClockPrefs.posX(ctx) / 100f);
+                  lp.y = margin + Math.round(freeY * ClockPrefs.posY(ctx) / 100f);
+              }
+
+              void update() {
+                  if (!attached || view == null) return;
+                  try {
+                      view.setText(timeText(ctx));
+                      position();
+                      wm.updateViewLayout(view, lp);
+                  } catch (Exception e) {
+                      // ignora; o proximo tick tenta de novo
+                  }
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/ClockSettingsActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.KeyEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.util.ArrayList;
+          import java.util.Calendar;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.function.Supplier;
+
+          // Tela de configuracao do relogio flutuante. 100% controlada por D-pad (sem toque).
+          // Esquerda/direita ajusta o valor da linha, OK alterna/avanca. Toda mudanca vale na hora
+          // (o relogio de verdade ja aparece por cima desta tela) e fica gravada.
+          public class ClockSettingsActivity extends Activity {
+              private interface Step {
+                  void apply(int dir);
+              }
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final List<TextView> valueViews = new ArrayList<>();
+              private final List<Supplier<String>> valueSources = new ArrayList<>();
+              private LinearLayout list;
+              private TextView liveTime;
+              private TextView warning;
+              private View warningButton;
+              private View firstRow;
+
+              private final Runnable tick = new Runnable() {
+                  @Override
+                  public void run() {
+                      liveTime.setText(fullTime());
+                      handler.postDelayed(this, 1000 - (System.currentTimeMillis() % 1000) + 10);
+                  }
+              };
+
+              private int dp(int v) {
+                  return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics());
+              }
+
+              private String fullTime() {
+                  Calendar c = Calendar.getInstance();
+                  return String.format(Locale.US, "%s:%02d", ClockOverlay.timeText(this), c.get(Calendar.SECOND));
+              }
+
+              private TextView text(String s, int sp, int color) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setTextColor(color);
+                  return t;
+              }
+
+              private GradientDrawable focusBg(boolean focused) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(focused ? 0x2B2D4A75 : 0x14FFFFFF);
+                  d.setCornerRadius(dp(14));
+                  d.setStroke(dp(2), focused ? 0xFF68A5FF : 0x00000000);
+                  return d;
+              }
+
+              private void styleFocus(View target) {
+                  target.setBackground(focusBg(false));
+                  target.setOnFocusChangeListener((view, has) -> view.setBackground(focusBg(has)));
+              }
+
+              private static int wrap(int i, int n) {
+                  return ((i % n) + n) % n;
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  FrameLayout root = new FrameLayout(this);
+                  root.setBackgroundColor(0xFF0B0E13);
+
+                  LinearLayout column = new LinearLayout(this);
+                  column.setOrientation(LinearLayout.VERTICAL);
+                  column.setPadding(dp(48), dp(20), dp(48), dp(16));
+
+                  TextView title = text("Horário", 26, 0xFFFFFFFF);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  column.addView(title);
+
+                  liveTime = text(fullTime(), 38, 0xFFFFFFFF);
+                  liveTime.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                  column.addView(liveTime);
+
+                  warning = text("O relógio só aparece sobre os apps com o serviço de acessibilidade "
+                          + "do Launcher TVzk ativo.", 14, 0xFFFFC857);
+                  column.addView(warning);
+                  warningButton = button("Abrir ajustes de acessibilidade", () -> {
+                      try {
+                          startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                      } catch (Exception e) {
+                          Toasts.show(this, "Não disponível nesta TV", Toast.LENGTH_SHORT);
+                      }
+                  });
+                  LinearLayout.LayoutParams wbp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  wbp.topMargin = dp(6);
+                  wbp.bottomMargin = dp(6);
+                  column.addView(warningButton, wbp);
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setVerticalScrollBarEnabled(false);
+                  scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                  list = new LinearLayout(this);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  scroll.addView(list, new ViewGroup.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  column.addView(scroll, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+                  buildRows();
+
+                  LinearLayout bar = new LinearLayout(this);
+                  bar.setOrientation(LinearLayout.HORIZONTAL);
+                  bar.setGravity(Gravity.CENTER);
+                  View reset = button("Restaurar padrão", () -> {
+                      ClockPrefs.resetAppearance(this);
+                      commit();
+                      Toasts.show(this, "Posição, tamanho e cores restaurados", Toast.LENGTH_SHORT);
+                  });
+                  View save = button("Salvar", () -> {
+                      commit();
+                      Toasts.show(this, "Configurações salvas", Toast.LENGTH_SHORT);
+                      finish();
+                  });
+                  LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  bp.leftMargin = dp(10);
+                  bp.rightMargin = dp(10);
+                  bar.addView(reset, bp);
+                  bar.addView(save, bp);
+                  LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  barLp.topMargin = dp(8);
+                  column.addView(bar, barLp);
+
+                  FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                  root.addView(column, cp);
+                  setContentView(root);
+                  if (firstRow != null) firstRow.requestFocus();
+              }
+
+              private void buildRows() {
+                  addRow("Relógio flutuante",
+                          () -> ClockPrefs.enabled(this) ? "Ligado" : "Desligado",
+                          dir -> {
+                              ClockPrefs.setEnabled(this, dir > 0);
+                              commit();
+                              hintIfServiceOff();
+                          },
+                          () -> {
+                              ClockPrefs.setEnabled(this, !ClockPrefs.enabled(this));
+                              commit();
+                              hintIfServiceOff();
+                          });
+
+                  addRow("Fixar em todas as telas",
+                          () -> ClockPrefs.pinned(this) ? "Sim, sobre qualquer app" : "Não, só no launcher",
+                          dir -> {
+                              ClockPrefs.setPinned(this, dir > 0);
+                              commit();
+                          },
+                          () -> {
+                              ClockPrefs.setPinned(this, !ClockPrefs.pinned(this));
+                              commit();
+                          });
+
+                  addRow("Posição horizontal",
+                          () -> "‹   " + ClockPrefs.posX(this) + "%   ›",
+                          dir -> {
+                              ClockPrefs.setPosX(this, ClockPrefs.posX(this) + dir * 2);
+                              commit();
+                          },
+                          null);
+
+                  addRow("Posição vertical",
+                          () -> "‹   " + ClockPrefs.posY(this) + "%   ›",
+                          dir -> {
+                              ClockPrefs.setPosY(this, ClockPrefs.posY(this) + dir * 2);
+                              commit();
+                          },
+                          null);
+
+                  addRow("Tamanho dos números",
+                          () -> "−   " + ClockPrefs.size(this) + "   +",
+                          dir -> {
+                              ClockPrefs.setSize(this, ClockPrefs.size(this) + dir);
+                              commit();
+                          },
+                          null);
+
+                  addRow("Cor dos números",
+                          () -> "‹   " + ClockPrefs.NUMBER_COLOR_NAMES[ClockPrefs.colorIndex(this)] + "   ›",
+                          dir -> {
+                              ClockPrefs.setColorIndex(this,
+                                      wrap(ClockPrefs.colorIndex(this) + dir, ClockPrefs.NUMBER_COLORS.length));
+                              commit();
+                          },
+                          () -> {
+                              ClockPrefs.setColorIndex(this,
+                                      wrap(ClockPrefs.colorIndex(this) + 1, ClockPrefs.NUMBER_COLORS.length));
+                              commit();
+                          });
+
+                  addRow("Fundo do relógio",
+                          () -> "‹   " + ClockPrefs.BG_NAMES[ClockPrefs.bgIndex(this)] + "   ›",
+                          dir -> {
+                              ClockPrefs.setBgIndex(this,
+                                      wrap(ClockPrefs.bgIndex(this) + dir, ClockPrefs.BG_COLORS.length));
+                              commit();
+                          },
+                          () -> {
+                              ClockPrefs.setBgIndex(this,
+                                      wrap(ClockPrefs.bgIndex(this) + 1, ClockPrefs.BG_COLORS.length));
+                              commit();
+                          });
+
+                  addRow("Transparência do fundo",
+                          () -> "‹   " + ClockPrefs.bgTransparency(this) + "%   ›",
+                          dir -> {
+                              ClockPrefs.setBgTransparency(this, ClockPrefs.bgTransparency(this) + dir * 5);
+                              commit();
+                          },
+                          null);
+              }
+
+              private void addRow(String label, Supplier<String> value, Step step, Runnable enter) {
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setGravity(Gravity.CENTER_VERTICAL);
+                  row.setPadding(dp(18), dp(9), dp(18), dp(9));
+                  row.setFocusable(true);
+                  styleFocus(row);
+
+                  TextView name = text(label, 19, 0xFFFFFFFF);
+                  row.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                  TextView val = text(value.get(), 19, 0xFF9CC2FF);
+                  val.setGravity(Gravity.RIGHT);
+                  row.addView(val, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  valueViews.add(val);
+                  valueSources.add(value);
+
+                  row.setOnClickListener(x -> {
+                      if (enter != null) enter.run();
+                  });
+                  row.setOnKeyListener((view, keyCode, event) -> {
+                      if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                          step.apply(-1);
+                          return true;
+                      }
+                      if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                          step.apply(1);
+                          return true;
+                      }
+                      return false;
+                  });
+
+                  LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  rp.bottomMargin = dp(5);
+                  list.addView(row, rp);
+                  if (firstRow == null) firstRow = row;
+              }
+
+              private View button(String label, Runnable action) {
+                  TextView b = text(label, 18, 0xFFFFFFFF);
+                  b.setGravity(Gravity.CENTER);
+                  b.setPadding(dp(28), dp(12), dp(28), dp(12));
+                  b.setFocusable(true);
+                  styleFocus(b);
+                  b.setOnClickListener(x -> action.run());
+                  return b;
+              }
+
+              // Aplica no relogio de verdade e atualiza os textos da tela.
+              private void commit() {
+                  PanelService s = PanelService.instance;
+                  if (s != null) s.refreshClock();
+                  refreshValues();
+              }
+
+              private void refreshValues() {
+                  for (int i = 0; i < valueViews.size(); i++) {
+                      valueViews.get(i).setText(valueSources.get(i).get());
+                  }
+              }
+
+              private void hintIfServiceOff() {
+                  if (ClockPrefs.enabled(this) && PanelService.instance == null) {
+                      Toasts.show(this, "Ative o serviço de acessibilidade do Launcher TVzk", Toast.LENGTH_LONG);
+                  }
+              }
+
+              private void updateWarning() {
+                  int vis = PanelService.instance == null ? View.VISIBLE : View.GONE;
+                  warning.setVisibility(vis);
+                  warningButton.setVisibility(vis);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  updateWarning();
+                  refreshValues();
+                  handler.removeCallbacks(tick);
+                  handler.post(tick);
+              }
+
+              @Override
+              protected void onPause() {
+                  handler.removeCallbacks(tick);
+                  super.onPause();
               }
           }
           EOF_FILE
