@@ -62,8 +62,8 @@ jobs:
                   applicationId 'com.painel.lateral'
                   minSdk 26
                   targetSdk 29
-                  versionCode 19
-                  versionName '2.6'
+                  versionCode 20
+                  versionName '2.7'
               }
 
               compileOptions {
@@ -76,6 +76,11 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
               <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
               <uses-feature android:name="android.software.leanback" android:required="false" />
 
@@ -83,6 +88,7 @@ jobs:
                   android:label="@string/app_name"
                   android:icon="@drawable/zk_icon"
                   android:banner="@drawable/zk_banner"
+                  android:usesCleartextTraffic="true"
                   android:theme="@android:style/Theme.Material.NoActionBar">
 
                   <activity
@@ -107,6 +113,17 @@ jobs:
                           <category android:name="android.intent.category.DEFAULT" />
                       </intent-filter>
                   </activity>
+
+                  <activity
+                      android:name=".RemoteActivity"
+                      android:exported="false"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:theme="@style/HomeTheme" />
+
+                  <activity
+                      android:name=".PairActivity"
+                      android:exported="false"
+                      android:theme="@style/HomeTheme" />
 
                   <activity
                       android:name=".AllAppsActivity"
@@ -1347,6 +1364,13 @@ jobs:
 
               private View dimView;
               private ClockOverlay clock;
+              private RemoteServer remote;
+              private final Runnable removeDimIfIdle = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (Prefs.brightness(PanelService.this) >= 100 && !dreaming) removeDim();
+                  }
+              };
 
               // ---- Protetor de tela automatico ----
               private static final long IDLE_MS = 5 * 60 * 1000L;   // 5 minutos parado
@@ -1377,14 +1401,41 @@ jobs:
                   super.onServiceConnected();
                   instance = this;
                   clock = new ClockOverlay(this);
+                  // A camada de brilho vem ANTES do relogio, para o relogio ficar sempre por cima dela.
                   applyBrightness(Prefs.brightness(this));
                   startIdleWatcher();
                   clock.refresh();
+                  startRemote();
+              }
+
+              private void startRemote() {
+                  try {
+                      if (remote == null) remote = new RemoteServer(this);
+                      remote.start();
+                  } catch (Exception e) {
+                      // o controle pelo celular nunca pode derrubar o servico
+                  }
+              }
+
+              private void stopRemote() {
+                  if (remote != null) {
+                      remote.stop();
+                      remote = null;
+                  }
+              }
+
+              boolean remoteRunning() {
+                  return remote != null && remote.isRunning();
+              }
+
+              int remotePort() {
+                  return remote == null ? 0 : remote.port();
               }
 
               @Override
               public boolean onUnbind(Intent intent) {
                   instance = null;
+                  stopRemote();
                   stopIdleWatcher();
                   removeDim();
                   if (clock != null) {
@@ -1396,6 +1447,8 @@ jobs:
 
               @Override
               public void onDestroy() {
+                  if (instance == this) instance = null;
+                  stopRemote();
                   stopIdleWatcher();
                   removeDim();
                   if (clock != null) {
@@ -1419,11 +1472,20 @@ jobs:
                       applyBrightness(5);
                       return;
                   }
-                  // O proprio painel e a interface do sistema nao contam como "o app em uso".
-                  if (pkg.equals(getPackageName()) && cls.endsWith("PanelActivity")) return;
+                  String own = getPackageName();
+                  if (pkg.equals(own)) {
+                      // Dialogos, menus e avisos da propria launcher nao mudam "onde o usuario esta".
+                      if (!cls.startsWith(own + ".")) return;
+                      // O painel lateral (brilho, volume...) tambem nao conta como tela nova.
+                      if (cls.endsWith("PanelActivity")) return;
+                      fgPackage = pkg;
+                      if (clock != null) clock.setHome(cls.endsWith(".HomeActivity"));
+                      lastActivity = SystemClock.elapsedRealtime();
+                      return;
+                  }
                   if (pkg.equals("com.android.systemui") || pkg.equals("android") || pkg.isEmpty()) return;
                   fgPackage = pkg;
-                  if (clock != null) clock.onForeground(pkg);
+                  if (clock != null) clock.setHome(false);
                   lastActivity = SystemClock.elapsedRealtime();
               }
 
@@ -1432,13 +1494,21 @@ jobs:
 
               // "Brilho" por software: uma camada preta transparente sobre toda a tela.
               // Nao mexe na luz de fundo real da TV (o Android nao permite isso a apps).
+              // A camada e criada uma vez e REUSADA: ao mexer no brilho so muda a transparencia dela,
+              // sem criar/remover janelas (era isso que fazia o relogio piscar ou sumir).
               void applyBrightness(int level) {
+                  handler.removeCallbacks(removeDimIfIdle);
                   if (level >= 100) {
-                      removeDim();
+                      if (dimView != null) {
+                          dimView.setAlpha(0f);
+                          dimView.setVisibility(View.INVISIBLE);
+                          // so remove de vez se ficar um tempo em 100%, para nao deixar janela parada a toa
+                          handler.postDelayed(removeDimIfIdle, 20000L);
+                      }
                       return;
                   }
-                  float alpha = (100 - level) / 100f;
                   try {
+                      boolean created = false;
                       if (dimView == null) {
                           WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
                           View v = new View(this);
@@ -1452,11 +1522,15 @@ jobs:
                                           | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                                           | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                                   PixelFormat.TRANSLUCENT);
+                          lp.setTitle("TVzkBrilho");
                           wm.addView(v, lp);
                           dimView = v;
-                          if (clock != null) clock.bringToFront();
+                          created = true;
                       }
-                      dimView.setAlpha(alpha);
+                      dimView.setVisibility(View.VISIBLE);
+                      dimView.setAlpha((100 - level) / 100f);
+                      // Janela nova fica acima das outras: o relogio volta por cima (uma unica vez).
+                      if (created && clock != null) clock.bringToFront();
                   } catch (Exception e) {
                       dimView = null;
                   }
@@ -1465,6 +1539,16 @@ jobs:
               // Chamado pela tela de configuracao do relogio para aplicar a mudanca na hora.
               void refreshClock() {
                   if (clock != null) clock.refresh();
+              }
+
+              // Tela de ajustes do relogio aberta/fechada.
+              void setClockPreview(boolean on) {
+                  if (clock != null) clock.setPreview(on);
+              }
+
+              // A tela inicial da launcher voltou para a frente.
+              void onHomeShown() {
+                  if (clock != null) clock.setHome(true);
               }
 
               private void noteActivity() {
@@ -1573,6 +1657,7 @@ jobs:
               }
 
               private void removeDim() {
+                  handler.removeCallbacks(removeDimIfIdle);
                   if (dimView == null) return;
                   try {
                       WindowManager wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
@@ -2187,6 +2272,7 @@ jobs:
           import android.util.DisplayMetrics;
           import android.util.TypedValue;
           import android.view.Gravity;
+          import android.view.KeyEvent;
           import android.view.View;
           import android.view.ViewGroup;
           import android.widget.FrameLayout;
@@ -2241,6 +2327,10 @@ jobs:
               private static final int WALL_MAX_W = 7680;
               private static final int WALL_MAX_H = 4320;
               private ImageView wallView;
+              // Para o relogio saber se a tela inicial esta na frente, e para o celular trocar o fundo.
+              static volatile boolean resumed;
+              static volatile HomeActivity current;
+              private long wallStamp = -1;
 
               // Reconstruir a fileira de apps e pesado. So refazemos quando algo realmente mudou
               // (app instalado/removido, ordem ou apps escondidos).
@@ -2271,6 +2361,7 @@ jobs:
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  current = this;
                   DisplayMetrics dm = getResources().getDisplayMetrics();
                   w = dm.widthPixels;
                   h = dm.heightPixels;
@@ -2360,6 +2451,8 @@ jobs:
 
               @Override
               protected void onDestroy() {
+                  if (current == this) current = null;
+                  resumed = false;
                   try {
                       unregisterReceiver(packageReceiver);
                   } catch (Exception ex) {
@@ -2456,8 +2549,26 @@ jobs:
               @Override
               protected void onResume() {
                   super.onResume();
+                  resumed = true;
+                  PanelService svc = PanelService.instance;
+                  if (svc != null) svc.onHomeShown();
+                  refreshWallpaperIfChanged();
                   ensureDock();
                   if (!dockVisible && !moveMode && focusAnchor != null) focusAnchor.requestFocus();
+              }
+
+              @Override
+              protected void onPause() {
+                  resumed = false;
+                  super.onPause();
+              }
+
+              // Chamado pelo servidor do celular quando o plano de fundo e trocado ou restaurado.
+              void refreshWallpaperIfChanged() {
+                  File f = customWallpaperFile();
+                  long stamp = f.exists() ? f.lastModified() : 0L;
+                  if (stamp == wallStamp) return;
+                  loadWallpaperAtStart();
               }
 
               @Override
@@ -2636,184 +2747,240 @@ jobs:
                   return g;
               }
 
-              // Botao de acao da lista (icone desenhado + texto), com foco bem visivel para o controle remoto.
-              private LinearLayout hiddenAction(int iconType, String label, boolean primary, Runnable onClick) {
-                  final int idleFill = primary ? 0xFF22507F : 0xFF2A3342;
+              // ---- Aplicativos escondidos (lista inteligente) ----
+              // Cada linha inteira e o seletor (sem botoes dentro da linha, sem zoom e sem recortes):
+              //   OK = mostrar o app na tela inicial (a linha some e o foco vai para a proxima)
+              //   segurar OK (ou MENU) = detalhes do app
+              // Embaixo ficam "Mostrar todos" e "Fechar", fixos, fora da rolagem.
+
+              private TextView dialogButton(String label, boolean primary, Runnable onClick) {
+                  final int idle = primary ? 0xFF22507F : 0xFF2A3342;
                   final int idleStroke = primary ? 0xFF3F72AE : 0xFF465369;
-                  final int radius = px(h * 0.012f);
-                  LinearLayout b = new LinearLayout(this);
-                  b.setOrientation(LinearLayout.HORIZONTAL);
+                  final int radius = px(h * 0.014f);
+                  TextView b = new TextView(this);
+                  b.setText(label);
+                  b.setTextColor(0xFFFFFFFF);
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                  b.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                   b.setGravity(Gravity.CENTER);
-                  b.setPadding(px(w * 0.009f), 0, px(w * 0.009f), 0);
+                  b.setSingleLine(true);
                   b.setFocusable(true);
                   b.setClickable(true);
                   b.setDefaultFocusHighlightEnabled(false);
-                  b.setId(View.generateViewId());
-                  b.setContentDescription(label);
-                  int is = px(h * 0.034f);
-                  b.addView(new IconView(this, iconType), new LinearLayout.LayoutParams(is, is));
-                  TextView t = new TextView(this);
-                  t.setText(label);
-                  t.setTextColor(0xFFFFFFFF);
-                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                  t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                  t.setSingleLine(true);
-                  LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                  tl.leftMargin = px(w * 0.005f);
-                  b.addView(t, tl);
-                  b.setBackground(roundRect(idleFill, radius, px(1), idleStroke));
+                  b.setPadding(px(w * 0.014f), px(h * 0.016f), px(w * 0.014f), px(h * 0.016f));
+                  b.setBackground(roundRect(idle, radius, px(2), idleStroke));
+                  b.setOnFocusChangeListener((v, f) -> v.setBackground(f
+                          ? roundRect(0xFF1F7AE0, radius, px(3), 0xFFFFFFFF)
+                          : roundRect(idle, radius, px(2), idleStroke)));
                   b.setOnClickListener(v -> onClick.run());
-                  b.setTag(new int[] { idleFill, idleStroke, radius });
                   return b;
               }
 
-              private void styleHiddenAction(View b, boolean focused) {
-                  int[] t = (int[]) b.getTag();
-                  if (focused) b.setBackground(roundRect(0xFF1F7AE0, t[2], px(3), 0xFFFFFFFF));
-                  else b.setBackground(roundRect(t[0], t[2], px(1), t[1]));
-                  float sc = focused ? 1.06f : 1f;
-                  b.animate().scaleX(sc).scaleY(sc).setDuration(120).start();
-              }
-
               private void showHiddenApps() {
-                  android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
-                  java.util.Set<String> hidden = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<>()));
-                  List<Apps.Entry> found = new ArrayList<>();
-                  for (Apps.Entry e : Apps.all(this)) if (hidden.contains(e.pkg)) found.add(e);
+                  final android.content.SharedPreferences p = getSharedPreferences("launcher_apps", MODE_PRIVATE);
+                  java.util.Set<String> hiddenNow = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<String>()));
+                  final List<Apps.Entry> found = new ArrayList<>();
+                  for (Apps.Entry e : Apps.all(this)) if (hiddenNow.contains(e.pkg)) found.add(e);
 
-                  final int pad = px(w * 0.016f);
-                  LinearLayout box = new LinearLayout(this);
+                  final int pad = px(w * 0.018f);
+                  final int inset = px(h * 0.008f);          // folga para o contorno do foco nunca ser cortado
+                  final int rowH = px(h * 0.095f);
+                  final int rowGap = px(h * 0.007f);
+                  final int rowRadius = px(h * 0.016f);
+
+                  final LinearLayout box = new LinearLayout(this);
                   box.setOrientation(LinearLayout.VERTICAL);
-                  box.setPadding(pad, px(h * 0.02f), pad, px(h * 0.016f));
-                  box.setBackground(roundRect(0xFF10141C, px(w * 0.018f), px(1), 0xFF2A3A55));
+                  box.setPadding(pad, px(h * 0.024f), pad, px(h * 0.02f));
+                  box.setBackground(roundRect(0xFF10141C, px(w * 0.016f), px(1), 0xFF2A3A55));
+                  box.setClipChildren(false);
+                  box.setClipToPadding(false);
 
+                  LinearLayout head = new LinearLayout(this);
+                  head.setOrientation(LinearLayout.HORIZONTAL);
+                  head.setGravity(Gravity.CENTER_VERTICAL);
                   TextView title = new TextView(this);
                   title.setText("Aplicativos escondidos");
                   title.setTextColor(0xFFFFFFFF);
                   title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
                   title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                  box.addView(title);
-                  TextView sub = new TextView(this);
-                  sub.setText(found.isEmpty() ? "Quando você esconder um app, ele aparece aqui."
-                          : "Escolha um app para ele voltar à tela inicial.");
+                  head.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  final TextView count = new TextView(this);
+                  count.setTextColor(0xFF9CC2FF);
+                  count.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+                  count.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                  head.addView(count);
+                  box.addView(head);
+
+                  final TextView sub = new TextView(this);
                   sub.setTextColor(0xFF9AA7BC);
                   sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                  sub.setPadding(0, px(h * 0.004f), 0, px(h * 0.014f));
+                  sub.setPadding(0, px(h * 0.006f), 0, px(h * 0.012f));
                   box.addView(sub);
 
-                  AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
+                  final AlertDialog d = new AlertDialog.Builder(this).setView(box).create();
 
-                  final int rowH = px(h * 0.105f);
-                  final int rowGap = px(h * 0.008f);
-                  final int inset = px(h * 0.006f);   // folga para o zoom do foco nao ser cortado
-                  ArrayList<View> restoreViews = new ArrayList<>();
-                  ArrayList<View> infoViews = new ArrayList<>();
+                  final LinearLayout rows = new LinearLayout(this);
+                  rows.setOrientation(LinearLayout.VERTICAL);
+                  final ScrollView scroll = new ScrollView(this);
+                  scroll.setVerticalScrollBarEnabled(false);
+                  scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                  scroll.setClipChildren(false);
+                  scroll.setClipToPadding(false);
+                  scroll.setPadding(inset, inset, inset, inset);
+                  scroll.addView(rows, new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  int maxList = px(h * 0.5f);
+                  LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  box.addView(scroll, slp);
 
-                  if (!found.isEmpty()) {
-                      LinearLayout rows = new LinearLayout(this);
-                      rows.setOrientation(LinearLayout.VERTICAL);
-                      rows.setPadding(inset, inset, inset, inset);
-                      for (Apps.Entry e : found) {
-                          LinearLayout row = new LinearLayout(this);
-                          row.setOrientation(LinearLayout.HORIZONTAL);
-                          row.setGravity(Gravity.CENTER_VERTICAL);
-                          row.setPadding(px(w * 0.008f), px(h * 0.008f), px(w * 0.008f), px(h * 0.008f));
-                          final int rowRadius = px(h * 0.016f);
-                          row.setBackground(roundRect(0xFF1A2130, rowRadius, 0, 0));
-                          LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, rowH);
-                          rowLp.bottomMargin = rowGap;
-                          rows.addView(row, rowLp);
+                  final LinearLayout footer = new LinearLayout(this);
+                  footer.setOrientation(LinearLayout.HORIZONTAL);
+                  footer.setPadding(inset, px(h * 0.012f), inset, inset);
+                  footer.setClipChildren(false);
+                  footer.setClipToPadding(false);
+                  box.addView(footer, new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-                          int is = rowH - px(h * 0.016f);
-                          if (e.icon != null) {
-                              AppIcon ic = new AppIcon(this, e.icon, 0.22f);
-                              row.addView(ic, new LinearLayout.LayoutParams(is, is));
-                          } else {
-                              row.addView(new View(this), new LinearLayout.LayoutParams(is, is));
-                          }
+                  final TextView tip = new TextView(this);
+                  tip.setText("OK mostra o app na tela inicial   ·   Segure OK para ver os detalhes");
+                  tip.setTextColor(0xFF6F7C92);
+                  tip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                  tip.setGravity(Gravity.CENTER);
+                  tip.setPadding(0, px(h * 0.008f), 0, 0);
+                  box.addView(tip);
 
-                          TextView name = new TextView(this);
-                          name.setText(e.label);
-                          name.setTextColor(0xFFFFFFFF);
-                          name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
-                          name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                          name.setSingleLine(true);
-                          name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-                          name.setGravity(Gravity.CENTER_VERTICAL);
-                          LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(0, -1, 1f);
-                          nl.leftMargin = px(w * 0.010f);
-                          row.addView(name, nl);
+                  final TextView closeBtn = dialogButton("Fechar", false, d::dismiss);
+                  final TextView allBtn = dialogButton("Mostrar todos", true, () -> {
+                      java.util.Set<String> hs = new java.util.HashSet<>(p.getStringSet("hidden", new java.util.HashSet<String>()));
+                      int n = found.size();
+                      for (Apps.Entry e : found) hs.remove(e.pkg);
+                      p.edit().putStringSet("hidden", hs).apply();
+                      d.dismiss();
+                      lastIndex = 0;
+                      buildDock();
+                      Toasts.show(this, n == 1 ? "1 app voltou para a tela inicial"
+                              : n + " apps voltaram para a tela inicial", Toast.LENGTH_SHORT);
+                  });
+                  LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+                  fl.rightMargin = px(w * 0.008f);
+                  footer.addView(allBtn, fl);
+                  footer.addView(closeBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-                          LinearLayout restore = hiddenAction(IconView.RESTORE, "Mostrar", true, () -> {
-                              java.util.Set<String> hset = new java.util.HashSet<>(getSharedPreferences("launcher_apps", MODE_PRIVATE)
-                                      .getStringSet("hidden", new java.util.HashSet<>()));
-                              hset.remove(e.pkg);
-                              getSharedPreferences("launcher_apps", MODE_PRIVATE).edit().putStringSet("hidden", hset).apply();
-                              d.dismiss();
-                              buildDock();
-                              Toasts.show(this, e.label + " voltou para a tela inicial", Toast.LENGTH_SHORT);
-                              showHiddenApps();
-                          });
-                          LinearLayout info = hiddenAction(IconView.INFO, "Detalhes", false, () -> openAppInfo(e));
-                          LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
-                                  ViewGroup.LayoutParams.WRAP_CONTENT, -1);
-                          bl.leftMargin = px(w * 0.006f);
-                          row.addView(restore, bl);
-                          row.addView(info, bl);
-
-                          final View.OnFocusChangeListener ch = (v, f) -> {
-                              styleHiddenAction(v, f);
-                              row.setBackground(f ? roundRect(0xFF22304A, rowRadius, px(2), 0xFF4C8DFF)
-                                      : roundRect(0xFF1A2130, rowRadius, 0, 0));
-                          };
-                          restore.setOnFocusChangeListener(ch);
-                          info.setOnFocusChangeListener(ch);
-                          restore.setNextFocusRightId(info.getId());
-                          restore.setNextFocusLeftId(restore.getId());
-                          info.setNextFocusLeftId(restore.getId());
-                          info.setNextFocusRightId(info.getId());
-                          restoreViews.add(restore);
-                          infoViews.add(info);
+                  // Atualiza textos e visibilidade conforme o que sobrou na lista.
+                  final Runnable refreshState = new Runnable() {
+                      @Override
+                      public void run() {
+                          int n = found.size();
+                          count.setText(n == 0 ? "" : (n == 1 ? "1 app" : n + " apps"));
+                          sub.setText(n == 0
+                                  ? "Nenhum app escondido. Para esconder, segure OK em um app da tela inicial."
+                                  : "Escolha um app para ele voltar à tela inicial.");
+                          scroll.setVisibility(n == 0 ? View.GONE : View.VISIBLE);
+                          allBtn.setVisibility(n > 1 ? View.VISIBLE : View.GONE);
+                          tip.setVisibility(n == 0 ? View.GONE : View.VISIBLE);
+                          ViewGroup.LayoutParams lp = scroll.getLayoutParams();
+                          int wanted = n * (rowH + rowGap) + inset * 2;
+                          lp.height = Math.min(wanted, maxList);
+                          scroll.setLayoutParams(lp);
                       }
-                      for (int i = 0; i < restoreViews.size(); i++) {
-                          if (i > 0) {
-                              restoreViews.get(i).setNextFocusUpId(restoreViews.get(i - 1).getId());
-                              infoViews.get(i).setNextFocusUpId(infoViews.get(i - 1).getId());
-                          }
-                          if (i + 1 < restoreViews.size()) {
-                              restoreViews.get(i).setNextFocusDownId(restoreViews.get(i + 1).getId());
-                              infoViews.get(i).setNextFocusDownId(infoViews.get(i + 1).getId());
-                          }
+                  };
+
+                  for (final Apps.Entry e : found) {
+                      final LinearLayout row = new LinearLayout(this);
+                      row.setOrientation(LinearLayout.HORIZONTAL);
+                      row.setGravity(Gravity.CENTER_VERTICAL);
+                      row.setPadding(px(w * 0.010f), px(h * 0.008f), px(w * 0.012f), px(h * 0.008f));
+                      row.setFocusable(true);
+                      row.setClickable(true);
+                      row.setLongClickable(true);
+                      row.setDefaultFocusHighlightEnabled(false);
+                      row.setBackground(roundRect(0xFF1A2130, rowRadius, px(2), 0xFF232D40));
+
+                      int is = rowH - px(h * 0.018f);
+                      if (e.icon != null) {
+                          row.addView(new AppIcon(this, e.icon, 0.22f), new LinearLayout.LayoutParams(is, is));
+                      } else {
+                          row.addView(new View(this), new LinearLayout.LayoutParams(is, is));
                       }
 
-                      ScrollView scroll = new ScrollView(this);
-                      scroll.setVerticalScrollBarEnabled(false);
-                      scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-                      scroll.setFocusable(false);
-                      scroll.addView(rows, new FrameLayout.LayoutParams(
-                              ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                      int wanted = found.size() * (rowH + rowGap) + inset * 2;
-                      int shown = Math.min(wanted, px(h * 0.52f));
-                      box.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, shown));
+                      TextView name = new TextView(this);
+                      name.setText(e.label);
+                      name.setTextColor(0xFFFFFFFF);
+                      name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
+                      name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                      name.setSingleLine(true);
+                      name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                      name.setGravity(Gravity.CENTER_VERTICAL);
+                      LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+                      nl.leftMargin = px(w * 0.011f);
+                      row.addView(name, nl);
+
+                      // Indicacao visual da acao (nao e um botao separado: a linha toda e o seletor).
+                      final LinearLayout chip = new LinearLayout(this);
+                      chip.setOrientation(LinearLayout.HORIZONTAL);
+                      chip.setGravity(Gravity.CENTER);
+                      chip.setPadding(px(w * 0.008f), 0, px(w * 0.010f), 0);
+                      chip.setBackground(roundRect(0xFF22507F, px(h * 0.02f), 0, 0));
+                      int ci = px(h * 0.03f);
+                      chip.addView(new IconView(this, IconView.RESTORE), new LinearLayout.LayoutParams(ci, ci));
+                      TextView chipText = new TextView(this);
+                      chipText.setText("Mostrar");
+                      chipText.setTextColor(0xFFFFFFFF);
+                      chipText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                      chipText.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                      chipText.setPadding(px(w * 0.004f), 0, 0, 0);
+                      chip.addView(chipText);
+                      row.addView(chip, new LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.WRAP_CONTENT, px(h * 0.05f)));
+
+                      row.setOnFocusChangeListener((v, f) -> {
+                          v.setBackground(f ? roundRect(0xFF22304A, rowRadius, px(3), 0xFF68A5FF)
+                                  : roundRect(0xFF1A2130, rowRadius, px(2), 0xFF232D40));
+                          chip.setBackground(roundRect(f ? 0xFF1F7AE0 : 0xFF22507F, px(h * 0.02f), 0, 0));
+                      });
+
+                      row.setOnClickListener(v -> {
+                          // Passa o foco para o vizinho ANTES de remover a linha, senao o foco "pula".
+                          int idx = rows.indexOfChild(row);
+                          View next = idx + 1 < rows.getChildCount() ? rows.getChildAt(idx + 1)
+                                  : (idx > 0 ? rows.getChildAt(idx - 1) : null);
+                          java.util.Set<String> hs = new java.util.HashSet<>(
+                                  p.getStringSet("hidden", new java.util.HashSet<String>()));
+                          hs.remove(e.pkg);
+                          p.edit().putStringSet("hidden", hs).apply();
+                          found.remove(e);
+                          if (next != null) next.requestFocus();
+                          rows.removeView(row);
+                          lastIndex = 0;
+                          buildDock();
+                          Toasts.show(this, e.label + " voltou para a tela inicial", Toast.LENGTH_SHORT);
+                          refreshState.run();
+                          if (found.isEmpty()) closeBtn.requestFocus();
+                      });
+                      row.setOnLongClickListener(v -> { openAppInfo(e); return true; });
+                      row.setOnKeyListener((v, keyCode, ev) -> {
+                          if (keyCode == KeyEvent.KEYCODE_MENU && ev.getAction() == KeyEvent.ACTION_UP) {
+                              openAppInfo(e);
+                              return true;
+                          }
+                          return false;
+                      });
+
+                      LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT, rowH);
+                      rowLp.bottomMargin = rowGap;
+                      rows.addView(row, rowLp);
                   }
 
-                  TextView close = addMenuButton(box, "Fechar", d::dismiss);
-                  close.setGravity(Gravity.CENTER);
-                  close.setId(View.generateViewId());
-                  if (!restoreViews.isEmpty()) {
-                      int last = restoreViews.size() - 1;
-                      restoreViews.get(last).setNextFocusDownId(close.getId());
-                      infoViews.get(last).setNextFocusDownId(close.getId());
-                      close.setNextFocusUpId(restoreViews.get(last).getId());
-                  }
+                  refreshState.run();
                   d.show();
                   if (d.getWindow() != null) {
                       d.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x00000000));
                       d.getWindow().setLayout((int) (w * 0.5f), ViewGroup.LayoutParams.WRAP_CONTENT);
                   }
-                  if (!restoreViews.isEmpty()) restoreViews.get(0).requestFocus();
-                  else close.requestFocus();
+                  if (rows.getChildCount() > 0) rows.getChildAt(0).requestFocus();
+                  else closeBtn.requestFocus();
               }
 
               private void openAppInfo(Apps.Entry e) {
@@ -2846,6 +3013,7 @@ jobs:
 
               private void loadWallpaperAtStart() {
                   final File f = customWallpaperFile();
+                  wallStamp = f.exists() ? f.lastModified() : 0L;
                   if (!f.exists()) {
                       wallView.setImageResource(R.drawable.wallpaper);
                       return;
@@ -3433,6 +3601,9 @@ jobs:
                   page.addView(title);
 
                   addOption(page, "Configurações do sistema da TV", "Abrir as configurações do Android", () -> launchSettings());
+                  addOption(page, "Conectar celular", "Controlar esta TV pelo celular: volume, brilho, plano de fundo e mais", () -> {
+                      startActivity(new Intent(this, PairActivity.class));
+                  });
                   addOption(page, "Mudar papel de parede", "Escolher um novo fundo para a TV", () -> {
                       try { startActivity(new Intent(Intent.ACTION_SET_WALLPAPER)); }
                       catch (Exception e) { toast("A TV não disponibilizou o seletor de papel de parede."); }
@@ -3546,6 +3717,15 @@ jobs:
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  // O mesmo APK serve para TV e celular. No celular abre a central de controle remoto
+                  // (e a tela inicial de launcher some da lista de "apps de inicio" do celular).
+                  if (!DeviceType.isTv(this)) {
+                      setTvComponents(false);
+                      startActivity(new Intent(this, RemoteActivity.class));
+                      finish();
+                      return;
+                  }
+                  setTvComponents(true);
                   if (getIntent() != null) {
                       startActivity(new Intent(this, HomeActivity.class));
                       finish();
@@ -3596,6 +3776,23 @@ jobs:
                   text(root, "settings put secure accessibility_enabled 1", 14);
 
                   setContentView(sv);
+              }
+
+              private void setTvComponents(boolean enabled) {
+                  try {
+                      PackageManager pm = getPackageManager();
+                      android.content.ComponentName home = new android.content.ComponentName(this, HomeActivity.class);
+                      int now = pm.getComponentEnabledSetting(home);
+                      boolean isEnabled = now == PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+                              || now == PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+                      if (isEnabled == enabled) return;
+                      pm.setComponentEnabledSetting(home,
+                              enabled ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                                      : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                              PackageManager.DONT_KILL_APP);
+                  } catch (Exception e) {
+                      // sem permissao para trocar: segue normal
+                  }
               }
 
               @Override
@@ -3688,40 +3885,44 @@ jobs:
                   sp(c).edit().putBoolean("enabled", v).apply();
               }
 
-              // Onde o relogio aparece: em tudo, so na tela inicial da launcher ou so nos apps.
+              // Onde o relogio aparece. Sao so duas opcoes:
+              //  - PIN_ALL: todas as telas, inclusive a tela inicial da launcher;
+              //  - PIN_NOT_HOME: todas as telas, menos a tela inicial da launcher.
               static final int PIN_ALL = 0;
-              static final int PIN_LAUNCHER = 1;
-              static final int PIN_APPS = 2;
-              // Ordem em que as setas / OK percorrem as opcoes.
-              static final int[] PIN_ORDER = { PIN_ALL, PIN_APPS, PIN_LAUNCHER };
+              static final int PIN_NOT_HOME = 1;
               static final String[] PIN_NAMES = {
-                      "Todas as telas", "Só nos apps · oculto na inicial", "Só na tela inicial"
+                      "Mostrar em todas as telas",
+                      "Mostrar em todas as telas, menos na inicial"
+              };
+              static final String[] PIN_DESCS = {
+                      "Vai aparecer em todas as telas, inclusive na tela inicial da launcher.",
+                      "Vai aparecer em todas as telas, mas não na tela inicial da launcher."
               };
 
               static int pinMode(Context c) {
                   SharedPreferences s = sp(c);
-                  if (s.contains("pin_mode")) return clamp(s.getInt("pin_mode", PIN_ALL), 0, 2);
-                  // versao antiga guardava so "pinned" (true = tudo, false = so launcher)
-                  return s.getBoolean("pinned", true) ? PIN_ALL : PIN_LAUNCHER;
+                  if (s.contains("pin_mode2")) return clamp(s.getInt("pin_mode2", PIN_ALL), 0, 1);
+                  // Versoes antigas tinham 3 opcoes (0 = tudo, 1 = so inicial, 2 = so apps).
+                  // "So nos apps" virou "menos na inicial"; "so na inicial" deixou de existir (vira "tudo").
+                  if (s.contains("pin_mode")) return s.getInt("pin_mode", 0) == 2 ? PIN_NOT_HOME : PIN_ALL;
+                  return PIN_ALL;
               }
 
               static void setPinMode(Context c, int v) {
-                  sp(c).edit().putInt("pin_mode", clamp(v, 0, 2)).apply();
+                  sp(c).edit().putInt("pin_mode2", clamp(v, 0, 1)).apply();
               }
 
               static String pinName(Context c) {
-                  int m = pinMode(c);
-                  for (int i = 0; i < PIN_ORDER.length; i++) if (PIN_ORDER[i] == m) return PIN_NAMES[i];
-                  return PIN_NAMES[0];
+                  return PIN_NAMES[pinMode(c)];
               }
 
-              // Avanca (+1) ou volta (-1) na lista de opcoes, dando a volta no fim.
+              static String pinDesc(Context c) {
+                  return PIN_DESCS[pinMode(c)];
+              }
+
+              // Com so duas opcoes, qualquer seta / OK simplesmente alterna entre elas.
               static void stepPinMode(Context c, int dir) {
-                  int m = pinMode(c);
-                  int idx = 0;
-                  for (int i = 0; i < PIN_ORDER.length; i++) if (PIN_ORDER[i] == m) idx = i;
-                  int n = PIN_ORDER.length;
-                  setPinMode(c, PIN_ORDER[((idx + dir) % n + n) % n]);
+                  setPinMode(c, pinMode(c) == PIN_ALL ? PIN_NOT_HOME : PIN_ALL);
               }
 
               // Copia de tudo o que esta salvo; usada pela tela de ajustes para poder descartar alteracoes.
@@ -3838,10 +4039,13 @@ jobs:
           import java.util.Locale;
 
           // Relogio flutuante. E uma janela de sobreposicao do servico de acessibilidade (TYPE_ACCESSIBILITY_OVERLAY),
-          // a mesma camada que o "Brilho" ja usa: fica por cima de qualquer app, sem precisar da permissao
+          // a mesma camada que o "Brilho" usa: fica por cima de qualquer app, sem a permissao
           // "Exibir sobre outros apps" e sem notificacao de servico em primeiro plano.
-          // Atualiza com o broadcast TIME_TICK (1x por minuto), entao nao ha timer rodando.
+          // Atualiza com o broadcast TIME_TICK (1x por minuto). Um "batimento" leve (a cada 30 s) confere se a
+          // janela continua la e a recoloca sozinho se o sistema a derrubou.
           final class ClockOverlay {
+              private static final long HEARTBEAT_MS = 30 * 1000L;
+
               private final Context ctx;
               private final WindowManager wm;
               private TextView view;
@@ -3849,12 +4053,32 @@ jobs:
               private boolean attached;
               private boolean receiverOn;
               private boolean suppressed;
-              private boolean fgOwn = true;
+              // A tela inicial da launcher (HomeActivity) esta na frente?
+              private boolean home;
+              // A tela de ajustes do relogio esta aberta: mostra sempre para poder ver o resultado.
+              private boolean preview;
               private final Handler handler = new Handler(Looper.getMainLooper());
               private final Runnable deferredRefresh = new Runnable() {
                   @Override
                   public void run() {
                       refresh();
+                  }
+              };
+              private final Runnable heartbeat = new Runnable() {
+                  @Override
+                  public void run() {
+                      try {
+                          if (shouldShow()) {
+                              boolean alive = attached && view != null && view.isAttachedToWindow();
+                              if (!alive) {
+                                  attached = false;
+                                  refresh();
+                              }
+                          }
+                      } catch (Exception e) {
+                          // tenta de novo no proximo batimento
+                      }
+                      if (shouldShow()) handler.postDelayed(this, HEARTBEAT_MS);
                   }
               };
 
@@ -3868,6 +4092,7 @@ jobs:
               ClockOverlay(Context ctx) {
                   this.ctx = ctx;
                   this.wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+                  this.home = HomeActivity.resumed;
               }
 
               // "HH:mm" (24h) ou "h:mm" (12h), conforme a configuracao da TV.
@@ -3884,32 +4109,34 @@ jobs:
               }
 
               private boolean shouldShow() {
-                  return ClockPrefs.enabled(ctx) && !suppressed && allowedHere();
+                  return ClockPrefs.enabled(ctx) && !suppressed && (preview || allowedHere());
               }
 
-              // Todas as telas / so nos apps (some na tela inicial) / so na tela inicial.
+              // Todas as telas / todas menos a tela inicial da launcher.
               private boolean allowedHere() {
-                  switch (ClockPrefs.pinMode(ctx)) {
-                      case ClockPrefs.PIN_APPS:
-                          return !fgOwn;
-                      case ClockPrefs.PIN_LAUNCHER:
-                          return fgOwn;
-                      default:
-                          return true;
-                  }
+                  if (ClockPrefs.pinMode(ctx) == ClockPrefs.PIN_NOT_HOME) return !home;
+                  return true;
               }
 
               // Reaplica tudo (liga, desliga, estilo, posicao). Nunca lanca excecao.
               void refresh() {
                   try {
                       if (!shouldShow()) {
+                          handler.removeCallbacks(heartbeat);
                           detach();
                           return;
                       }
                       if (!attached) attach();
-                      if (!attached) return;
+                      if (!attached) {
+                          // nao conseguiu criar a janela agora: o batimento tenta de novo
+                          handler.removeCallbacks(heartbeat);
+                          handler.postDelayed(heartbeat, 2000L);
+                          return;
+                      }
                       applyStyle();
                       update();
+                      handler.removeCallbacks(heartbeat);
+                      handler.postDelayed(heartbeat, HEARTBEAT_MS);
                   } catch (Exception e) {
                       // o relogio nunca pode derrubar o servico nem o launcher
                   }
@@ -3922,32 +4149,36 @@ jobs:
                   refresh();
               }
 
-              // Chamado a cada troca de janela. Nos modos "so nos apps" e "so na tela inicial" o relogio
-              // entra/sai conforme o app em uso. A troca espera um instante para nao competir com a
-              // animacao de abertura do app (criar/remover janela de sobreposicao nessa hora deixava a abertura lenta).
-              void onForeground(String pkg) {
-                  boolean own = pkg != null && pkg.equals(ctx.getPackageName());
-                  if (own == fgOwn) return;
-                  fgOwn = own;
-                  if (ClockPrefs.pinMode(ctx) != ClockPrefs.PIN_ALL) {
+              // Tela de ajustes do relogio aberta: o relogio aparece mesmo no modo "menos na inicial".
+              void setPreview(boolean p) {
+                  if (preview == p) return;
+                  preview = p;
+                  handler.removeCallbacks(deferredRefresh);
+                  refresh();
+              }
+
+              // Informado quando a tela inicial da launcher entra ou sai da frente.
+              // Entrar/sair espera um instante para nao competir com a animacao de abertura do app.
+              void setHome(boolean h) {
+                  if (home == h) return;
+                  home = h;
+                  if (ClockPrefs.pinMode(ctx) == ClockPrefs.PIN_NOT_HOME) {
                       handler.removeCallbacks(deferredRefresh);
-                      handler.postDelayed(deferredRefresh, 350L);
+                      handler.postDelayed(deferredRefresh, h ? 120L : 350L);
                   }
               }
 
-              // Mantem o relogio acima da camada de brilho quando ela e criada depois.
+              // Depois que a camada de brilho e criada ela fica por cima; recoloca o relogio acima dela.
               void bringToFront() {
-                  if (!attached || view == null) return;
-                  try {
-                      wm.removeViewImmediate(view);
-                      wm.addView(view, lp);
-                  } catch (Exception e) {
-                      attached = false;
-                  }
+                  if (!attached) return;
+                  detach();
+                  handler.removeCallbacks(deferredRefresh);
+                  handler.postDelayed(deferredRefresh, 60L);
               }
 
               void destroy() {
                   handler.removeCallbacks(deferredRefresh);
+                  handler.removeCallbacks(heartbeat);
                   detach();
                   view = null;
                   lp = null;
@@ -4022,7 +4253,7 @@ jobs:
               }
 
               private void applyStyle() {
-                  float sh = ctx.getResources().getDisplayMetrics().heightPixels;
+                  float sh = realMetrics().heightPixels;
                   float px = sh * (0.008f + 0.004f * ClockPrefs.size(ctx));
                   view.setTextSize(TypedValue.COMPLEX_UNIT_PX, px);
                   view.setTextColor(ClockPrefs.numberColor(ctx));
@@ -4042,28 +4273,46 @@ jobs:
                   }
               }
 
-              // Posicao em % do espaco livre (0..100), com uma margem de seguranca de 2% da altura.
+              // Tamanho REAL da tela (inclui as bordas que o sistema nao conta), para o relogio chegar aos cantos.
+              private DisplayMetrics realMetrics() {
+                  DisplayMetrics dm = new DisplayMetrics();
+                  try {
+                      wm.getDefaultDisplay().getRealMetrics(dm);
+                  } catch (Exception e) {
+                      dm = ctx.getResources().getDisplayMetrics();
+                  }
+                  return dm;
+              }
+
+              // Posicao em % de TODA a tela (0..100): 0 encosta na borda de cima/esquerda e 100 na de baixo/direita.
+              // Sem fundo, o espaco vazio em volta do numero (padding) tambem e usado, para o NUMERO chegar na borda.
               private void position() {
-                  DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+                  DisplayMetrics dm = realMetrics();
                   view.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
                           View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
                   int vw = view.getMeasuredWidth();
                   int vh = view.getMeasuredHeight();
-                  int margin = Math.round(dm.heightPixels * 0.02f);
-                  int freeX = Math.max(0, dm.widthPixels - vw - 2 * margin);
-                  int freeY = Math.max(0, dm.heightPixels - vh - 2 * margin);
-                  lp.x = margin + Math.round(freeX * ClockPrefs.posX(ctx) / 100f);
-                  lp.y = margin + Math.round(freeY * ClockPrefs.posY(ctx) / 100f);
+                  boolean hasBg = (ClockPrefs.backgroundArgb(ctx) >>> 24) != 0;
+                  int bleedX = hasBg ? 0 : view.getPaddingLeft();
+                  int bleedY = hasBg ? 0 : view.getPaddingTop();
+                  int freeX = dm.widthPixels - vw + 2 * bleedX;
+                  int freeY = dm.heightPixels - vh + 2 * bleedY;
+                  lp.x = -bleedX + Math.round(freeX * ClockPrefs.posX(ctx) / 100f);
+                  lp.y = -bleedY + Math.round(freeY * ClockPrefs.posY(ctx) / 100f);
               }
 
               void update() {
+                  if (shouldShow() && !attached) {
+                      refresh();
+                      return;
+                  }
                   if (!attached || view == null) return;
                   try {
                       view.setText(timeText(ctx));
                       position();
                       wm.updateViewLayout(view, lp);
                   } catch (Exception e) {
-                      // ignora; o proximo tick tenta de novo
+                      // ignora; o proximo batimento confere a janela
                   }
               }
           }
@@ -4118,6 +4367,8 @@ jobs:
               private Map<String, Object> snapshot;
               private boolean saved;
               private boolean leavingForAccessibility;
+              // Segurando a seta, o ajuste acelera (1 -> 2 -> 5 por toque).
+              private int repeat;
 
               private final Runnable tick = new Runnable() {
                   @Override
@@ -4258,8 +4509,9 @@ jobs:
                               hintIfServiceOff();
                           });
 
-                  addRow("Onde fixar o relógio",
+                  addRowDesc("Onde mostrar o relógio",
                           () -> "‹   " + ClockPrefs.pinName(this) + "   ›",
+                          () -> ClockPrefs.pinDesc(this),
                           dir -> {
                               ClockPrefs.stepPinMode(this, dir);
                               commit();
@@ -4272,7 +4524,7 @@ jobs:
                   addRow("Posição horizontal",
                           () -> "‹   " + ClockPrefs.posX(this) + "%   ›",
                           dir -> {
-                              ClockPrefs.setPosX(this, ClockPrefs.posX(this) + dir * 2);
+                              ClockPrefs.setPosX(this, ClockPrefs.posX(this) + dir * mult());
                               commit();
                           },
                           null);
@@ -4280,7 +4532,7 @@ jobs:
                   addRow("Posição vertical",
                           () -> "‹   " + ClockPrefs.posY(this) + "%   ›",
                           dir -> {
-                              ClockPrefs.setPosY(this, ClockPrefs.posY(this) + dir * 2);
+                              ClockPrefs.setPosY(this, ClockPrefs.posY(this) + dir * mult());
                               commit();
                           },
                           null);
@@ -4322,13 +4574,23 @@ jobs:
                   addRow("Transparência do fundo",
                           () -> "‹   " + ClockPrefs.bgTransparency(this) + "%   ›",
                           dir -> {
-                              ClockPrefs.setBgTransparency(this, ClockPrefs.bgTransparency(this) + dir * 5);
+                              ClockPrefs.setBgTransparency(this, ClockPrefs.bgTransparency(this) + dir * 5 * Math.min(2, mult()));
                               commit();
                           },
                           null);
               }
 
+              private int mult() {
+                  return repeat > 12 ? 5 : (repeat > 4 ? 2 : 1);
+              }
+
               private void addRow(String label, Supplier<String> value, Step step, Runnable enter) {
+                  addRowDesc(label, value, null, step, enter);
+              }
+
+              // Linha de ajuste. Com "desc", mostra embaixo do titulo uma explicacao do valor escolhido.
+              private void addRowDesc(String label, Supplier<String> value, Supplier<String> desc,
+                                      Step step, Runnable enter) {
                   LinearLayout row = new LinearLayout(this);
                   row.setOrientation(LinearLayout.HORIZONTAL);
                   row.setGravity(Gravity.CENTER_VERTICAL);
@@ -4336,8 +4598,18 @@ jobs:
                   row.setFocusable(true);
                   styleFocus(row);
 
+                  LinearLayout left = new LinearLayout(this);
+                  left.setOrientation(LinearLayout.VERTICAL);
                   TextView name = text(label, 19, 0xFFFFFFFF);
-                  row.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  left.addView(name);
+                  if (desc != null) {
+                      TextView d = text(desc.get(), 13, 0xFF8C95A5);
+                      d.setPadding(0, dp(2), dp(12), 0);
+                      left.addView(d);
+                      valueViews.add(d);
+                      valueSources.add(desc);
+                  }
+                  row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
                   TextView val = text(value.get(), 19, 0xFF9CC2FF);
                   val.setGravity(Gravity.RIGHT);
@@ -4352,10 +4624,12 @@ jobs:
                   row.setOnKeyListener((view, keyCode, event) -> {
                       if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                       if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                          repeat = event.getRepeatCount();
                           step.apply(-1);
                           return true;
                       }
                       if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                          repeat = event.getRepeatCount();
                           step.apply(1);
                           return true;
                       }
@@ -4435,8 +4709,2637 @@ jobs:
               protected void onResume() {
                   super.onResume();
                   leavingForAccessibility = false;
+                  PanelService svc = PanelService.instance;
+                  if (svc != null) svc.setClockPreview(true);
                   updateWarning();
                   refreshValues();
+                  handler.removeCallbacks(tick);
+                  handler.post(tick);
+              }
+
+              @Override
+              protected void onPause() {
+                  PanelService svc = PanelService.instance;
+                  if (svc != null) svc.setClockPreview(false);
+                  handler.removeCallbacks(tick);
+                  super.onPause();
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/DeviceType.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.UiModeManager;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.content.res.Configuration;
+
+          // O mesmo APK serve para a TV e para o celular. Aqui ele descobre onde esta instalado.
+          final class DeviceType {
+              private DeviceType() { }
+
+              static boolean isTv(Context c) {
+                  try {
+                      UiModeManager um = (UiModeManager) c.getSystemService(Context.UI_MODE_SERVICE);
+                      if (um != null && um.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION) {
+                          return true;
+                      }
+                  } catch (Exception e) {
+                      // segue para a checagem por recursos
+                  }
+                  PackageManager pm = c.getPackageManager();
+                  return pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                          || pm.hasSystemFeature("android.software.leanback_only");
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/RemotePrefs.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+
+          import java.security.SecureRandom;
+          import java.util.HashSet;
+          import java.util.Set;
+
+          // Lado da TV: codigo de pareamento e celulares autorizados.
+          // O celular digita o codigo que aparece na TV UMA vez; em troca recebe uma chave (token) longa
+          // que fica guardada nele. O codigo muda depois de cada pareamento, entao nao pode ser reaproveitado.
+          final class RemotePrefs {
+              private static final SecureRandom RNG = new SecureRandom();
+
+              private RemotePrefs() { }
+
+              private static SharedPreferences sp(Context c) {
+                  return c.getSharedPreferences("painel_remote", Context.MODE_PRIVATE);
+              }
+
+              static synchronized String code(Context c) {
+                  String code = sp(c).getString("code", null);
+                  if (code == null || code.length() != 6) return newCode(c);
+                  return code;
+              }
+
+              static synchronized String newCode(Context c) {
+                  String code = String.format(java.util.Locale.US, "%06d", RNG.nextInt(1000000));
+                  sp(c).edit().putString("code", code).apply();
+                  return code;
+              }
+
+              static synchronized String addToken(Context c, String phoneName) {
+                  byte[] b = new byte[16];
+                  RNG.nextBytes(b);
+                  StringBuilder sb = new StringBuilder();
+                  for (byte x : b) sb.append(String.format(java.util.Locale.US, "%02x", x));
+                  String token = sb.toString();
+                  Set<String> tokens = new HashSet<>(sp(c).getStringSet("tokens", new HashSet<String>()));
+                  String safe = phoneName == null ? "Celular" : phoneName.replace("|", " ").replace(",", " ");
+                  tokens.add(token + "|" + safe);
+                  sp(c).edit().putStringSet("tokens", tokens).apply();
+                  return token;
+              }
+
+              static synchronized boolean valid(Context c, String token) {
+                  if (token == null || token.length() < 16) return false;
+                  for (String t : sp(c).getStringSet("tokens", new HashSet<String>())) {
+                      if (t.startsWith(token + "|")) return true;
+                  }
+                  return false;
+              }
+
+              static synchronized int pairedCount(Context c) {
+                  return sp(c).getStringSet("tokens", new HashSet<String>()).size();
+              }
+
+              static synchronized java.util.List<String> pairedNames(Context c) {
+                  java.util.List<String> out = new java.util.ArrayList<>();
+                  for (String t : sp(c).getStringSet("tokens", new HashSet<String>())) {
+                      int i = t.indexOf('|');
+                      out.add(i >= 0 ? t.substring(i + 1) : "Celular");
+                  }
+                  return out;
+              }
+
+              // Desconecta todos os celulares e gera outro codigo.
+              static synchronized void revokeAll(Context c) {
+                  sp(c).edit().remove("tokens").apply();
+                  newCode(c);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/RemoteServer.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.Canvas;
+          import android.graphics.drawable.Drawable;
+          import android.media.AudioManager;
+          import android.net.nsd.NsdManager;
+          import android.net.nsd.NsdServiceInfo;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.Settings;
+          import android.view.KeyEvent;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.BufferedInputStream;
+          import java.io.ByteArrayOutputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.Inet4Address;
+          import java.net.InetAddress;
+          import java.net.InetSocketAddress;
+          import java.net.NetworkInterface;
+          import java.net.ServerSocket;
+          import java.net.Socket;
+          import java.net.URLDecoder;
+          import java.nio.charset.StandardCharsets;
+          import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.concurrent.Callable;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.FutureTask;
+          import java.util.concurrent.TimeUnit;
+
+          // Lado da TV: um servidor HTTP pequeno (so na rede local) que deixa o celular controlar a TV.
+          // Roda dentro do servico de acessibilidade, que ja fica ligado o tempo todo.
+          // - o celular acha a TV pelo NSD (mDNS) ou pelo IP que aparece na tela "Conectar celular";
+          // - todo comando exige a chave (token) criada no pareamento com o codigo de 6 digitos da TV.
+          final class RemoteServer {
+              static final int PORT_FIRST = 8765;
+              static final int PORT_LAST = 8775;
+              static final String SERVICE_TYPE = "_tvzk._tcp.";
+              private static final int MAX_UPLOAD = 25 * 1024 * 1024;
+
+              private final PanelService svc;
+              private final Context ctx;
+              private final Handler main = new Handler(Looper.getMainLooper());
+              private ServerSocket server;
+              private ExecutorService pool;
+              private volatile boolean running;
+              private volatile int port;
+              private NsdManager nsd;
+              private NsdManager.RegistrationListener regListener;
+              private volatile boolean nsdRegistered;
+              // Protecao contra tentativas de adivinhar o codigo: ip -> {erros, bloqueado ate}
+              private final Map<String, long[]> fails = new HashMap<>();
+              private int globalFails;
+              private final Map<String, byte[]> iconCache = new HashMap<>();
+
+              private final Runnable nsdRetry = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (!running) return;
+                      if (!nsdRegistered) registerNsd();
+                      main.postDelayed(this, 30000L);
+                  }
+              };
+
+              RemoteServer(PanelService svc) {
+                  this.svc = svc;
+                  this.ctx = svc.getApplicationContext();
+              }
+
+              boolean isRunning() {
+                  return running;
+              }
+
+              int port() {
+                  return port;
+              }
+
+              synchronized void start() {
+                  if (running) return;
+                  ServerSocket ss = null;
+                  for (int p = PORT_FIRST; p <= PORT_LAST && ss == null; p++) {
+                      try {
+                          ServerSocket t = new ServerSocket();
+                          t.setReuseAddress(true);
+                          t.bind(new InetSocketAddress(p));
+                          ss = t;
+                      } catch (IOException e) {
+                          ss = null;
+                      }
+                  }
+                  if (ss == null) return;
+                  server = ss;
+                  port = ss.getLocalPort();
+                  running = true;
+                  pool = Executors.newCachedThreadPool();
+                  Thread t = new Thread(this::acceptLoop, "tvzk-remote");
+                  t.setDaemon(true);
+                  t.start();
+                  main.post(nsdRetry);
+              }
+
+              synchronized void stop() {
+                  running = false;
+                  main.removeCallbacks(nsdRetry);
+                  try {
+                      if (server != null) server.close();
+                  } catch (IOException e) {
+                      // ja fechado
+                  }
+                  server = null;
+                  if (pool != null) pool.shutdownNow();
+                  pool = null;
+                  final NsdManager m = nsd;
+                  final NsdManager.RegistrationListener l = regListener;
+                  if (m != null && l != null && nsdRegistered) {
+                      try {
+                          m.unregisterService(l);
+                      } catch (Exception e) {
+                          // sem registro
+                      }
+                  }
+                  nsdRegistered = false;
+                  regListener = null;
+              }
+
+              private void registerNsd() {
+                  try {
+                      if (!running) return;
+                      nsd = (NsdManager) ctx.getSystemService(Context.NSD_SERVICE);
+                      if (nsd == null) return;
+                      NsdServiceInfo info = new NsdServiceInfo();
+                      info.setServiceName("TVzk " + deviceName(ctx));
+                      info.setServiceType(SERVICE_TYPE);
+                      info.setPort(port);
+                      regListener = new NsdManager.RegistrationListener() {
+                          @Override
+                          public void onServiceRegistered(NsdServiceInfo i) {
+                              nsdRegistered = true;
+                          }
+
+                          @Override
+                          public void onRegistrationFailed(NsdServiceInfo i, int code) {
+                              nsdRegistered = false;
+                          }
+
+                          @Override
+                          public void onServiceUnregistered(NsdServiceInfo i) {
+                              nsdRegistered = false;
+                          }
+
+                          @Override
+                          public void onUnregistrationFailed(NsdServiceInfo i, int code) {
+                              nsdRegistered = false;
+                          }
+                      };
+                      nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, regListener);
+                  } catch (Exception e) {
+                      nsdRegistered = false;
+                  }
+              }
+
+              private void acceptLoop() {
+                  while (running) {
+                      try {
+                          final Socket s = server.accept();
+                          ExecutorService p = pool;
+                          if (p == null) {
+                              s.close();
+                              return;
+                          }
+                          p.execute(() -> handle(s));
+                      } catch (Exception e) {
+                          if (!running) return;
+                      }
+                  }
+              }
+
+              // ---------------------------------------------------------------- HTTP
+
+              private static final class Resp {
+                  final int code;
+                  final String type;
+                  final byte[] body;
+
+                  Resp(int code, String type, byte[] body) {
+                      this.code = code;
+                      this.type = type;
+                      this.body = body;
+                  }
+              }
+
+              private static Resp json(JSONObject o) {
+                  return new Resp(200, "application/json; charset=utf-8", o.toString().getBytes(StandardCharsets.UTF_8));
+              }
+
+              private static Resp json(JSONArray a) {
+                  return new Resp(200, "application/json; charset=utf-8", a.toString().getBytes(StandardCharsets.UTF_8));
+              }
+
+              private static Resp error(int code, String msg) {
+                  JSONObject o = new JSONObject();
+                  try {
+                      o.put("error", msg);
+                  } catch (Exception e) {
+                      // nao acontece
+                  }
+                  return new Resp(code, "application/json; charset=utf-8", o.toString().getBytes(StandardCharsets.UTF_8));
+              }
+
+              private static String statusText(int c) {
+                  switch (c) {
+                      case 200: return "OK";
+                      case 400: return "Bad Request";
+                      case 401: return "Unauthorized";
+                      case 403: return "Forbidden";
+                      case 404: return "Not Found";
+                      case 413: return "Payload Too Large";
+                      case 415: return "Unsupported Media Type";
+                      case 422: return "Unprocessable Entity";
+                      case 429: return "Too Many Requests";
+                      case 501: return "Not Implemented";
+                      case 503: return "Service Unavailable";
+                      default: return "Error";
+                  }
+              }
+
+              private static String readLine(InputStream in) throws IOException {
+                  StringBuilder sb = new StringBuilder();
+                  int c;
+                  int n = 0;
+                  while ((c = in.read()) != -1) {
+                      if (c == '\n') return sb.toString();
+                      if (c != '\r') sb.append((char) c);
+                      if (++n > 8192) throw new IOException("linha longa demais");
+                  }
+                  return sb.length() == 0 ? null : sb.toString();
+              }
+
+              private static Map<String, String> parseQuery(String q) {
+                  Map<String, String> m = new HashMap<>();
+                  if (q == null || q.isEmpty()) return m;
+                  for (String part : q.split("&")) {
+                      if (part.isEmpty()) continue;
+                      int i = part.indexOf('=');
+                      try {
+                          String k = URLDecoder.decode(i < 0 ? part : part.substring(0, i), "UTF-8");
+                          String v = i < 0 ? "" : URLDecoder.decode(part.substring(i + 1), "UTF-8");
+                          m.put(k, v);
+                      } catch (Exception e) {
+                          // ignora parametro invalido
+                      }
+                  }
+                  return m;
+              }
+
+              private void handle(Socket s) {
+                  try {
+                      s.setSoTimeout(15000);
+                      InputStream in = new BufferedInputStream(s.getInputStream(), 8192);
+                      OutputStream out = s.getOutputStream();
+                      String reqLine = readLine(in);
+                      if (reqLine == null || reqLine.isEmpty()) return;
+                      String[] rl = reqLine.split(" ");
+                      if (rl.length < 2) {
+                          write(out, error(400, "pedido invalido"));
+                          return;
+                      }
+                      String method = rl[0].toUpperCase(Locale.US);
+                      String target = rl[1];
+                      Map<String, String> headers = new HashMap<>();
+                      String line;
+                      int guard = 0;
+                      while ((line = readLine(in)) != null && !line.isEmpty() && guard++ < 64) {
+                          int i = line.indexOf(':');
+                          if (i > 0) {
+                              headers.put(line.substring(0, i).trim().toLowerCase(Locale.US), line.substring(i + 1).trim());
+                          }
+                      }
+                      long len = 0;
+                      try {
+                          String cl = headers.get("content-length");
+                          if (cl != null) len = Long.parseLong(cl);
+                      } catch (NumberFormatException e) {
+                          len = 0;
+                      }
+                      String path = target;
+                      String query = "";
+                      int q = target.indexOf('?');
+                      if (q >= 0) {
+                          path = target.substring(0, q);
+                          query = target.substring(q + 1);
+                      }
+                      String ip = s.getInetAddress() == null ? "?" : s.getInetAddress().getHostAddress();
+                      Resp r;
+                      try {
+                          r = route(method, path, parseQuery(query), headers, in, len, ip);
+                      } catch (Exception e) {
+                          r = error(500, "falha: " + e.getClass().getSimpleName());
+                      }
+                      write(out, r);
+                  } catch (Exception e) {
+                      // conexao caiu: nada a fazer
+                  } finally {
+                      try {
+                          s.close();
+                      } catch (IOException e) {
+                          // ja fechado
+                      }
+                  }
+              }
+
+              private static void write(OutputStream out, Resp r) throws IOException {
+                  String head = "HTTP/1.1 " + r.code + " " + statusText(r.code) + "\r\n"
+                          + "Content-Type: " + r.type + "\r\n"
+                          + "Content-Length: " + r.body.length + "\r\n"
+                          + "Cache-Control: no-store\r\n"
+                          + "Connection: close\r\n\r\n";
+                  out.write(head.getBytes(StandardCharsets.UTF_8));
+                  out.write(r.body);
+                  out.flush();
+              }
+
+              private <T> T onMain(Callable<T> c) throws Exception {
+                  if (Looper.myLooper() == Looper.getMainLooper()) return c.call();
+                  FutureTask<T> ft = new FutureTask<>(c);
+                  main.post(ft);
+                  return ft.get(4, TimeUnit.SECONDS);
+              }
+
+              // ---------------------------------------------------------------- rotas
+
+              private Resp route(String method, String path, Map<String, String> p, Map<String, String> headers,
+                                 InputStream in, long len, String ip) throws Exception {
+                  if (path.equals("/hello")) return json(helloJson());
+                  if (path.equals("/pair")) return pair(p, ip);
+                  if (!RemotePrefs.valid(ctx, headers.get("x-token"))) return error(401, "nao autorizado");
+
+                  switch (path) {
+                      case "/state":
+                          return json(stateJson());
+                      case "/volume":
+                          return volume(p);
+                      case "/brightness":
+                          return brightness(p);
+                      case "/key":
+                          return key(p.get("name"));
+                      case "/apps":
+                          return apps();
+                      case "/icon":
+                          return icon(p.get("pkg"));
+                      case "/launch":
+                          return launch(p.get("pkg"));
+                      case "/wallpaper":
+                          if (method.equals("DELETE")) return resetWallpaper();
+                          return uploadWallpaper(in, len);
+                      case "/wallpaper/reset":
+                          return resetWallpaper();
+                      case "/clock":
+                          return clock(p);
+                      case "/screensaver": {
+                          boolean ok = onMain(() -> Screensaver.start(ctx));
+                          return ok ? okJson() : error(501, "protetor de tela indisponivel");
+                      }
+                      case "/open":
+                          return open(p.get("what"));
+                      default:
+                          return error(404, "rota desconhecida");
+                  }
+              }
+
+              private static Resp okJson() {
+                  JSONObject o = new JSONObject();
+                  try {
+                      o.put("ok", true);
+                  } catch (Exception e) {
+                      // nao acontece
+                  }
+                  return json(o);
+              }
+
+              static String deviceName() {
+                  return deviceName(null);
+              }
+
+              static String deviceName(Context c) {
+                  String n = null;
+                  try {
+                      if (c != null) n = Settings.Global.getString(c.getContentResolver(), "device_name");
+                  } catch (Exception e) {
+                      n = null;
+                  }
+                  if (n == null || n.trim().isEmpty()) n = Build.MODEL;
+                  if (n == null || n.trim().isEmpty()) n = "TV";
+                  return n.trim();
+              }
+
+              // Endereco IPv4 da TV na rede local (para mostrar na tela de pareamento).
+              static String localIp() {
+                  try {
+                      List<NetworkInterface> list = Collections.list(NetworkInterface.getNetworkInterfaces());
+                      for (NetworkInterface ni : list) {
+                          if (!ni.isUp() || ni.isLoopback()) continue;
+                          for (InetAddress a : Collections.list(ni.getInetAddresses())) {
+                              if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
+                          }
+                      }
+                  } catch (Exception e) {
+                      // sem rede
+                  }
+                  return null;
+              }
+
+              private JSONObject helloJson() throws Exception {
+                  JSONObject o = new JSONObject();
+                  o.put("app", "tvzk");
+                  o.put("name", deviceName(ctx));
+                  o.put("port", port);
+                  return o;
+              }
+
+              private Resp pair(Map<String, String> p, String ip) throws Exception {
+                  long now = System.currentTimeMillis();
+                  synchronized (fails) {
+                      long[] f = fails.get(ip);
+                      if (f != null && f[1] > now) return error(429, "muitas tentativas; espere 1 minuto");
+                  }
+                  String code = p.get("code");
+                  if (code != null && code.trim().equals(RemotePrefs.code(ctx))) {
+                      synchronized (fails) {
+                          fails.remove(ip);
+                          globalFails = 0;
+                      }
+                      String name = p.get("name");
+                      String token = RemotePrefs.addToken(ctx, name);
+                      RemotePrefs.newCode(ctx);
+                      JSONObject o = new JSONObject();
+                      o.put("token", token);
+                      o.put("name", deviceName(ctx));
+                      return json(o);
+                  }
+                  synchronized (fails) {
+                      long[] f = fails.get(ip);
+                      if (f == null) {
+                          f = new long[2];
+                          fails.put(ip, f);
+                      }
+                      f[0]++;
+                      if (f[0] >= 5) {
+                          f[0] = 0;
+                          f[1] = now + 60000L;
+                      }
+                      if (++globalFails >= 12) {
+                          globalFails = 0;
+                          RemotePrefs.newCode(ctx);
+                      }
+                  }
+                  return error(403, "codigo incorreto");
+              }
+
+              private AudioManager audio() {
+                  return (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+              }
+
+              private JSONObject clockJson() throws Exception {
+                  JSONObject c = new JSONObject();
+                  c.put("on", ClockPrefs.enabled(ctx));
+                  c.put("pin", ClockPrefs.pinMode(ctx));
+                  c.put("x", ClockPrefs.posX(ctx));
+                  c.put("y", ClockPrefs.posY(ctx));
+                  c.put("size", ClockPrefs.size(ctx));
+                  c.put("color", ClockPrefs.colorIndex(ctx));
+                  c.put("bg", ClockPrefs.bgIndex(ctx));
+                  c.put("bgt", ClockPrefs.bgTransparency(ctx));
+                  return c;
+              }
+
+              private JSONObject stateJson() throws Exception {
+                  JSONObject o = new JSONObject();
+                  o.put("name", deviceName(ctx));
+                  AudioManager am = audio();
+                  int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+                  int v = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                  o.put("vol", Math.round(v * 100f / max));
+                  o.put("muted", am.isStreamMute(AudioManager.STREAM_MUSIC));
+                  o.put("bright", Prefs.brightness(ctx));
+                  o.put("dpad", Build.VERSION.SDK_INT >= 33);
+                  o.put("customWall", new File(ctx.getFilesDir(), "wallpaper_custom").exists());
+                  o.put("clock", clockJson());
+                  return o;
+              }
+
+              private static int parseInt(String s, int def) {
+                  try {
+                      return Integer.parseInt(s.trim());
+                  } catch (Exception e) {
+                      return def;
+                  }
+              }
+
+              private Resp volume(Map<String, String> p) throws Exception {
+                  AudioManager am = audio();
+                  int max = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+                  String mute = p.get("mute");
+                  if (mute != null) {
+                      boolean muted = am.isStreamMute(AudioManager.STREAM_MUSIC);
+                      boolean want = mute.equals("toggle") ? !muted : mute.equals("1");
+                      if (want != muted) {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                                  want ? AudioManager.ADJUST_MUTE : AudioManager.ADJUST_UNMUTE,
+                                  AudioManager.FLAG_SHOW_UI);
+                      }
+                  }
+                  if (p.containsKey("set")) {
+                      int pct = Math.max(0, Math.min(100, parseInt(p.get("set"), 0)));
+                      if (pct > 0 && am.isStreamMute(AudioManager.STREAM_MUSIC)) {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0);
+                      }
+                      am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(pct * max / 100f), AudioManager.FLAG_SHOW_UI);
+                  }
+                  if (p.containsKey("delta")) {
+                      int d = Math.max(-10, Math.min(10, parseInt(p.get("delta"), 0)));
+                      for (int i = 0; i < Math.abs(d); i++) {
+                          am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                                  d > 0 ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER,
+                                  i == Math.abs(d) - 1 ? AudioManager.FLAG_SHOW_UI : 0);
+                      }
+                  }
+                  return json(stateJson());
+              }
+
+              private Resp brightness(Map<String, String> p) throws Exception {
+                  final int v = Math.max(Prefs.MIN_BRIGHTNESS, Math.min(100, parseInt(p.get("set"), 100)));
+                  Prefs.saveBrightness(ctx, v);
+                  onMain(() -> {
+                      svc.applyBrightness(v);
+                      return null;
+                  });
+                  return json(stateJson());
+              }
+
+              private Resp key(String name) throws Exception {
+                  if (name == null) return error(400, "falta o nome do botao");
+                  int global = -1;
+                  int media = -1;
+                  switch (name) {
+                      case "back": global = AccessibilityService.GLOBAL_ACTION_BACK; break;
+                      case "home": global = AccessibilityService.GLOBAL_ACTION_HOME; break;
+                      case "recents": global = AccessibilityService.GLOBAL_ACTION_RECENTS; break;
+                      case "notifications": global = AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS; break;
+                      case "power": global = AccessibilityService.GLOBAL_ACTION_POWER_DIALOG; break;
+                      case "up": case "down": case "left": case "right": case "ok":
+                          if (Build.VERSION.SDK_INT < 33) return error(501, "setas precisam do Android 13 ou mais novo na TV");
+                          if (name.equals("up")) global = AccessibilityService.GLOBAL_ACTION_DPAD_UP;
+                          else if (name.equals("down")) global = AccessibilityService.GLOBAL_ACTION_DPAD_DOWN;
+                          else if (name.equals("left")) global = AccessibilityService.GLOBAL_ACTION_DPAD_LEFT;
+                          else if (name.equals("right")) global = AccessibilityService.GLOBAL_ACTION_DPAD_RIGHT;
+                          else global = AccessibilityService.GLOBAL_ACTION_DPAD_CENTER;
+                          break;
+                      case "playpause": media = KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE; break;
+                      case "next": media = KeyEvent.KEYCODE_MEDIA_NEXT; break;
+                      case "prev": media = KeyEvent.KEYCODE_MEDIA_PREVIOUS; break;
+                      case "rew": media = KeyEvent.KEYCODE_MEDIA_REWIND; break;
+                      case "ff": media = KeyEvent.KEYCODE_MEDIA_FAST_FORWARD; break;
+                      case "stop": media = KeyEvent.KEYCODE_MEDIA_STOP; break;
+                      default: return error(400, "botao desconhecido");
+                  }
+                  if (media > 0) {
+                      AudioManager am = audio();
+                      am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, media));
+                      am.dispatchMediaKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, media));
+                      return okJson();
+                  }
+                  final int g = global;
+                  boolean ok = onMain(() -> svc.performGlobalAction(g));
+                  return ok ? okJson() : error(501, "a TV recusou o comando");
+              }
+
+              private Apps.Entry findApp(String pkg) {
+                  if (pkg == null) return null;
+                  for (Apps.Entry e : Apps.all(ctx)) if (e.pkg.equals(pkg)) return e;
+                  return null;
+              }
+
+              private Resp apps() throws Exception {
+                  JSONArray arr = new JSONArray();
+                  for (Apps.Entry e : Apps.all(ctx)) {
+                      JSONObject o = new JSONObject();
+                      o.put("p", e.pkg);
+                      o.put("l", e.label);
+                      arr.put(o);
+                  }
+                  return json(arr);
+              }
+
+              private Resp icon(final String pkg) throws Exception {
+                  final Apps.Entry e = findApp(pkg);
+                  if (e == null) return error(404, "app nao encontrado");
+                  byte[] cached;
+                  synchronized (iconCache) {
+                      cached = iconCache.get(pkg);
+                  }
+                  if (cached == null) {
+                      cached = onMain(() -> {
+                          Drawable src = e.icon != null ? e.icon : e.banner;
+                          if (src == null) return null;
+                          Drawable d = src;
+                          try {
+                              Drawable.ConstantState cs = src.getConstantState();
+                              if (cs != null) d = cs.newDrawable().mutate();
+                          } catch (Exception ex) {
+                              d = src;
+                          }
+                          int size = 128;
+                          Bitmap b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+                          d.setBounds(0, 0, size, size);
+                          d.draw(new Canvas(b));
+                          ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                          b.compress(Bitmap.CompressFormat.PNG, 100, bos);
+                          b.recycle();
+                          return bos.toByteArray();
+                      });
+                      if (cached == null) return error(404, "sem icone");
+                      synchronized (iconCache) {
+                          iconCache.put(pkg, cached);
+                      }
+                  }
+                  return new Resp(200, "image/png", cached);
+              }
+
+              private Resp launch(final String pkg) throws Exception {
+                  final Apps.Entry e = findApp(pkg);
+                  if (e == null) return error(404, "app nao encontrado");
+                  boolean ok = onMain(() -> {
+                      try {
+                          Intent i = new Intent(e.launch);
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                          ctx.startActivity(i);
+                          return true;
+                      } catch (Exception ex) {
+                          return false;
+                      }
+                  });
+                  return ok ? okJson() : error(501, "a TV nao deixou abrir o app");
+              }
+
+              private Resp open(String what) throws Exception {
+                  final String action;
+                  if ("wifi".equals(what)) action = Settings.ACTION_WIFI_SETTINGS;
+                  else if ("display".equals(what)) action = Settings.ACTION_DISPLAY_SETTINGS;
+                  else action = Settings.ACTION_SETTINGS;
+                  boolean ok = onMain(() -> {
+                      try {
+                          Intent i = new Intent(action);
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          ctx.startActivity(i);
+                          return true;
+                      } catch (Exception ex) {
+                          return false;
+                      }
+                  });
+                  return ok ? okJson() : error(501, "tela indisponivel nesta TV");
+              }
+
+              private void notifyWallpaper() {
+                  final HomeActivity h = HomeActivity.current;
+                  if (h != null) h.runOnUiThread(h::refreshWallpaperIfChanged);
+              }
+
+              private Resp uploadWallpaper(InputStream in, long len) throws Exception {
+                  if (len <= 0) return error(400, "imagem vazia");
+                  if (len > MAX_UPLOAD) return error(413, "imagem grande demais");
+                  File dir = ctx.getFilesDir();
+                  File tmp = new File(dir, "wallpaper_upload");
+                  try (FileOutputStream out = new FileOutputStream(tmp)) {
+                      byte[] buf = new byte[1 << 16];
+                      long left = len;
+                      while (left > 0) {
+                          int n = in.read(buf, 0, (int) Math.min(buf.length, left));
+                          if (n < 0) break;
+                          out.write(buf, 0, n);
+                          left -= n;
+                      }
+                      if (left > 0) {
+                          tmp.delete();
+                          return error(400, "envio incompleto");
+                      }
+                  }
+                  BitmapFactory.Options o = new BitmapFactory.Options();
+                  o.inJustDecodeBounds = true;
+                  BitmapFactory.decodeFile(tmp.getAbsolutePath(), o);
+                  if (o.outWidth <= 0 || o.outHeight <= 0) {
+                      tmp.delete();
+                      return error(415, "arquivo nao e uma imagem");
+                  }
+                  float ratio = (float) o.outWidth / o.outHeight;
+                  if (Math.abs(ratio / (16f / 9f) - 1f) > 0.03f) {
+                      tmp.delete();
+                      return error(422, "a imagem precisa estar na proporcao 16:9");
+                  }
+                  if (o.outWidth < 1280) {
+                      tmp.delete();
+                      return error(422, "a imagem e pequena demais");
+                  }
+                  File dst = new File(dir, "wallpaper_custom");
+                  if (dst.exists()) dst.delete();
+                  if (!tmp.renameTo(dst)) {
+                      tmp.delete();
+                      return error(500, "nao foi possivel salvar");
+                  }
+                  dst.setLastModified(System.currentTimeMillis());
+                  notifyWallpaper();
+                  return okJson();
+              }
+
+              private Resp resetWallpaper() {
+                  File dst = new File(ctx.getFilesDir(), "wallpaper_custom");
+                  if (dst.exists()) dst.delete();
+                  notifyWallpaper();
+                  return okJson();
+              }
+
+              private Resp clock(Map<String, String> p) throws Exception {
+                  if ("1".equals(p.get("reset"))) ClockPrefs.resetAppearance(ctx);
+                  if (p.containsKey("on")) ClockPrefs.setEnabled(ctx, "1".equals(p.get("on")));
+                  if (p.containsKey("pin")) ClockPrefs.setPinMode(ctx, parseInt(p.get("pin"), 0));
+                  if (p.containsKey("x")) ClockPrefs.setPosX(ctx, parseInt(p.get("x"), ClockPrefs.POS_X_DEFAULT));
+                  if (p.containsKey("y")) ClockPrefs.setPosY(ctx, parseInt(p.get("y"), ClockPrefs.POS_Y_DEFAULT));
+                  if (p.containsKey("size")) ClockPrefs.setSize(ctx, parseInt(p.get("size"), ClockPrefs.SIZE_DEFAULT));
+                  if (p.containsKey("color")) ClockPrefs.setColorIndex(ctx, parseInt(p.get("color"), 0));
+                  if (p.containsKey("bg")) ClockPrefs.setBgIndex(ctx, parseInt(p.get("bg"), 0));
+                  if (p.containsKey("bgt")) {
+                      ClockPrefs.setBgTransparency(ctx, parseInt(p.get("bgt"), ClockPrefs.BG_TRANSPARENCY_DEFAULT));
+                  }
+                  onMain(() -> {
+                      svc.refreshClock();
+                      return null;
+                  });
+                  JSONObject o = new JSONObject();
+                  o.put("clock", clockJson());
+                  return json(o);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/RemoteClient.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.content.SharedPreferences;
+          import android.os.Handler;
+          import android.os.Looper;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          // Lado do celular: fala com o servidor da TV (RemoteServer) pela rede Wi-Fi.
+          // Comandos de controle usam uma fila unica (chegam na ordem em que foram dados);
+          // icones e envio de imagem usam outra fila, para nao travar os controles.
+          final class RemoteClient {
+              static final class Result {
+                  boolean ok;
+                  int code = -1;
+                  JSONObject json;
+                  JSONArray array;
+                  byte[] bytes;
+                  String error = "";
+
+                  // Texto pronto para mostrar ao usuario quando algo deu errado.
+                  String message() {
+                      if (code == -1) return "Não foi possível falar com a TV. Ela está ligada e no mesmo Wi-Fi?";
+                      if (code == 401) return "A TV não reconhece mais este celular. Conecte de novo.";
+                      if (code == 403) return "Código incorreto.";
+                      if (code == 429) return "Muitas tentativas. Espere 1 minuto.";
+                      if (code == 501 && error.length() > 0) return "A TV não conseguiu: " + error;
+                      if (error.length() > 0) return error;
+                      return "Erro " + code;
+                  }
+              }
+
+              interface Callback {
+                  void done(Result r);
+              }
+
+              private final Handler main = new Handler(Looper.getMainLooper());
+              private final ExecutorService control = Executors.newSingleThreadExecutor();
+              private final ExecutorService bulk = Executors.newFixedThreadPool(3);
+              private final SharedPreferences sp;
+
+              private volatile String host;
+              private volatile int port;
+              private volatile String token;
+              private volatile String tvName;
+
+              RemoteClient(Context c) {
+                  sp = c.getApplicationContext().getSharedPreferences("painel_remote_client", Context.MODE_PRIVATE);
+                  host = sp.getString("host", null);
+                  port = sp.getInt("port", RemoteServer.PORT_FIRST);
+                  token = sp.getString("token", null);
+                  tvName = sp.getString("name", null);
+              }
+
+              boolean paired() {
+                  return token != null && host != null;
+              }
+
+              String host() {
+                  return host;
+              }
+
+              int port() {
+                  return port;
+              }
+
+              String tvName() {
+                  return tvName;
+              }
+
+              // A TV mudou de endereco (roteador deu outro IP): guarda o novo sem perder o pareamento.
+              void updateTarget(String newHost, int newPort) {
+                  host = newHost;
+                  port = newPort;
+                  sp.edit().putString("host", newHost).putInt("port", newPort).apply();
+              }
+
+              void forget() {
+                  token = null;
+                  host = null;
+                  tvName = null;
+                  sp.edit().clear().apply();
+              }
+
+              // ------------------------------------------------------------ chamada HTTP (bloqueante)
+
+              private static Result call(String host, int port, String method, String path, byte[] body,
+                                         String contentType, String token, int readTimeoutMs) {
+                  Result r = new Result();
+                  HttpURLConnection c = null;
+                  try {
+                      URL url = new URL("http://" + host + ":" + port + path);
+                      c = (HttpURLConnection) url.openConnection();
+                      c.setConnectTimeout(2500);
+                      c.setReadTimeout(readTimeoutMs);
+                      c.setUseCaches(false);
+                      c.setRequestMethod(method);
+                      c.setRequestProperty("Connection", "close");
+                      if (token != null) c.setRequestProperty("X-Token", token);
+                      if (body != null) {
+                          c.setDoOutput(true);
+                          c.setFixedLengthStreamingMode(body.length);
+                          if (contentType != null) c.setRequestProperty("Content-Type", contentType);
+                          try (OutputStream out = c.getOutputStream()) {
+                              out.write(body);
+                          }
+                      } else if (method.equals("POST")) {
+                          c.setDoOutput(true);
+                          c.setFixedLengthStreamingMode(0);
+                          c.getOutputStream().close();
+                      }
+                      r.code = c.getResponseCode();
+                      InputStream is = r.code >= 400 ? c.getErrorStream() : c.getInputStream();
+                      byte[] data = new byte[0];
+                      if (is != null) {
+                          ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                          byte[] buf = new byte[8192];
+                          int n;
+                          while ((n = is.read(buf)) != -1) {
+                              bos.write(buf, 0, n);
+                              if (bos.size() > 8 * 1024 * 1024) break;
+                          }
+                          is.close();
+                          data = bos.toByteArray();
+                      }
+                      r.bytes = data;
+                      String type = c.getContentType();
+                      if (type != null && type.startsWith("application/json") && data.length > 0) {
+                          String text = new String(data, StandardCharsets.UTF_8).trim();
+                          try {
+                              if (text.startsWith("[")) r.array = new JSONArray(text);
+                              else r.json = new JSONObject(text);
+                          } catch (Exception e) {
+                              // resposta fora do formato: segue sem json
+                          }
+                      }
+                      if (r.json != null && r.json.has("error")) r.error = r.json.optString("error", "");
+                      r.ok = r.code >= 200 && r.code < 300;
+                  } catch (Exception e) {
+                      r.ok = false;
+                      r.code = -1;
+                      r.error = e.getClass().getSimpleName();
+                  } finally {
+                      if (c != null) c.disconnect();
+                  }
+                  return r;
+              }
+
+              private void run(ExecutorService ex, final String method, final String path, final byte[] body,
+                               final String type, final boolean auth, final int timeout, final Callback cb) {
+                  final String h = host;
+                  final int p = port;
+                  final String t = auth ? token : null;
+                  ex.execute(() -> {
+                      final Result r;
+                      if (h == null) {
+                          r = new Result();
+                          r.error = "sem TV";
+                      } else {
+                          r = call(h, p, method, path, body, type, t, timeout);
+                      }
+                      if (cb != null) main.post(() -> cb.done(r));
+                  });
+              }
+
+              // Comandos de controle (em ordem).
+              void get(String path, Callback cb) {
+                  run(control, "GET", path, null, null, true, 5000, cb);
+              }
+
+              void post(String path, Callback cb) {
+                  run(control, "POST", path, null, null, true, 5000, cb);
+              }
+
+              // Icones e tarefas mais lentas.
+              void getBulk(String path, Callback cb) {
+                  run(bulk, "GET", path, null, null, true, 8000, cb);
+              }
+
+              void postBulk(String path, Callback cb) {
+                  run(bulk, "POST", path, null, null, true, 8000, cb);
+              }
+
+              void upload(String path, byte[] body, String type, Callback cb) {
+                  run(bulk, "POST", path, body, type, true, 60000, cb);
+              }
+
+              // Pergunta "quem e voce?" a um endereco, sem precisar de chave.
+              void hello(final String h, final int p, final Callback cb) {
+                  bulk.execute(() -> {
+                      final Result r = call(h, p, "GET", "/hello", null, null, null, 3000);
+                      main.post(() -> cb.done(r));
+                  });
+              }
+
+              // Pareia com o codigo da TV e guarda a chave recebida.
+              void pair(final String h, final int p, final String code, final String phoneName, final Callback cb) {
+                  bulk.execute(() -> {
+                      String path;
+                      try {
+                          path = "/pair?code=" + java.net.URLEncoder.encode(code, "UTF-8")
+                                  + "&name=" + java.net.URLEncoder.encode(phoneName, "UTF-8");
+                      } catch (Exception e) {
+                          path = "/pair?code=" + code;
+                      }
+                      final Result r = call(h, p, "POST", path, null, null, null, 6000);
+                      if (r.ok && r.json != null && r.json.has("token")) {
+                          host = h;
+                          port = p;
+                          token = r.json.optString("token", null);
+                          tvName = r.json.optString("name", "TV");
+                          sp.edit().putString("host", h).putInt("port", p)
+                                  .putString("token", token).putString("name", tvName).apply();
+                      } else {
+                          r.ok = false;
+                      }
+                      main.post(() -> cb.done(r));
+                  });
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/TvDiscovery.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.content.Context;
+          import android.net.nsd.NsdManager;
+          import android.net.nsd.NsdServiceInfo;
+          import android.os.Handler;
+          import android.os.Looper;
+
+          import java.net.Inet4Address;
+          import java.util.ArrayDeque;
+
+          // Lado do celular: procura TVs com o app na rede (mDNS / NSD).
+          final class TvDiscovery {
+              interface Listener {
+                  void onFound(String name, String host, int port);
+
+                  void onLost(String name);
+              }
+
+              private final NsdManager nsd;
+              private final Listener listener;
+              private final Handler main = new Handler(Looper.getMainLooper());
+              private final ArrayDeque<NsdServiceInfo> queue = new ArrayDeque<>();
+              private NsdManager.DiscoveryListener dl;
+              private boolean active;
+              private boolean resolving;
+
+              TvDiscovery(Context c, Listener l) {
+                  this.nsd = (NsdManager) c.getApplicationContext().getSystemService(Context.NSD_SERVICE);
+                  this.listener = l;
+              }
+
+              // "TVzk Sala (2)" -> "Sala"
+              static String cleanName(String raw) {
+                  String n = raw == null ? "" : raw.trim();
+                  if (n.startsWith("TVzk ")) n = n.substring(5);
+                  n = n.replaceAll("\\s*\\(\\d+\\)$", "").trim();
+                  return n.isEmpty() ? "TV" : n;
+              }
+
+              synchronized void start() {
+                  if (active || nsd == null) return;
+                  dl = new NsdManager.DiscoveryListener() {
+                      @Override
+                      public void onStartDiscoveryFailed(String type, int err) {
+                          synchronized (TvDiscovery.this) {
+                              active = false;
+                          }
+                      }
+
+                      @Override
+                      public void onStopDiscoveryFailed(String type, int err) { }
+
+                      @Override
+                      public void onDiscoveryStarted(String type) { }
+
+                      @Override
+                      public void onDiscoveryStopped(String type) { }
+
+                      @Override
+                      public void onServiceFound(NsdServiceInfo info) {
+                          String t = info.getServiceType();
+                          if (t == null || !t.toLowerCase().contains("_tvzk")) return;
+                          synchronized (TvDiscovery.this) {
+                              queue.add(info);
+                          }
+                          resolveNext();
+                      }
+
+                      @Override
+                      public void onServiceLost(final NsdServiceInfo info) {
+                          final String n = cleanName(info.getServiceName());
+                          main.post(() -> listener.onLost(n));
+                      }
+                  };
+                  try {
+                      nsd.discoverServices(RemoteServer.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, dl);
+                      active = true;
+                  } catch (Exception e) {
+                      active = false;
+                  }
+              }
+
+              synchronized void stop() {
+                  queue.clear();
+                  resolving = false;
+                  if (!active || nsd == null || dl == null) return;
+                  try {
+                      nsd.stopServiceDiscovery(dl);
+                  } catch (Exception e) {
+                      // ja parado
+                  }
+                  active = false;
+                  dl = null;
+              }
+
+              // O Android so resolve um servico por vez; por isso a fila.
+              private void resolveNext() {
+                  final NsdServiceInfo info;
+                  synchronized (this) {
+                      if (resolving || queue.isEmpty() || nsd == null) return;
+                      resolving = true;
+                      info = queue.poll();
+                  }
+                  try {
+                      nsd.resolveService(info, new NsdManager.ResolveListener() {
+                          @Override
+                          public void onResolveFailed(NsdServiceInfo i, int err) {
+                              done();
+                          }
+
+                          @Override
+                          public void onServiceResolved(NsdServiceInfo i) {
+                              try {
+                                  if (i.getHost() instanceof Inet4Address) {
+                                      final String name = cleanName(i.getServiceName());
+                                      final String host = i.getHost().getHostAddress();
+                                      final int port = i.getPort();
+                                      main.post(() -> listener.onFound(name, host, port));
+                                  }
+                              } catch (Exception e) {
+                                  // ignora esta TV
+                              }
+                              done();
+                          }
+                      });
+                  } catch (Exception e) {
+                      done();
+                  }
+              }
+
+              private void done() {
+                  synchronized (this) {
+                      resolving = false;
+                  }
+                  resolveNext();
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/RemoteActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.Intent;
+          import android.content.res.ColorStateList;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.graphics.Matrix;
+          import android.graphics.Outline;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.graphics.drawable.RippleDrawable;
+          import android.media.ExifInterface;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.text.Editable;
+          import android.text.InputType;
+          import android.text.TextWatcher;
+          import android.util.LruCache;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.ViewOutlineProvider;
+          import android.widget.EditText;
+          import android.widget.FrameLayout;
+          import android.widget.GridLayout;
+          import android.widget.HorizontalScrollView;
+          import android.widget.ImageView;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.SeekBar;
+          import android.widget.Switch;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import org.json.JSONArray;
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.util.ArrayList;
+          import java.util.LinkedHashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+
+          // Versao do app para o CELULAR: em vez de launcher, uma central de funcoes que controla a TV
+          // pela rede Wi-Fi (volume, brilho, controle remoto, plano de fundo, relogio, aplicativos...).
+          public class RemoteActivity extends Activity {
+              private static final int BG = 0xFF0B0F17;
+              private static final int CARD = 0xFF151B27;
+              private static final int CARD2 = 0xFF1E2636;
+              private static final int LINE = 0xFF2A3550;
+              private static final int ACCENT = 0xFF4C8DFF;
+              private static final int TEXT = 0xFFFFFFFF;
+              private static final int MUTED = 0xFF8E9BB3;
+              private static final int GOOD = 0xFF3DDC84;
+              private static final int BAD = 0xFFFF6B6B;
+              private static final int REQ_PICK = 5101;
+
+              private final Handler ui = new Handler(Looper.getMainLooper());
+              private final ExecutorService worker = Executors.newSingleThreadExecutor();
+              private RemoteClient client;
+              private TvDiscovery discovery;
+              private final Map<String, String[]> found = new LinkedHashMap<>();
+
+              private LinearLayout page;
+              private LinearLayout connectionCard;
+              private LinearLayout controls;
+              private boolean online;
+              private int failCount;
+              private boolean applying;
+              private int dragging;
+              private long lastLocalChange;
+              private boolean dpadSupported;
+
+              // widgets que acompanham o estado da TV
+              private SeekBar volBar;
+              private TextView volText;
+              private TextView muteBtn;
+              private SeekBar brightBar;
+              private TextView brightText;
+              private View dpadBox;
+              private TextView dpadNote;
+              private Switch clockSwitch;
+              private final TextView[] pinCards = new TextView[2];
+              private SeekBar clockX;
+              private SeekBar clockY;
+              private SeekBar clockSize;
+              private SeekBar clockBgt;
+              private TextView clockXText;
+              private TextView clockYText;
+              private TextView clockSizeText;
+              private TextView clockBgtText;
+              private LinearLayout colorRow;
+              private LinearLayout bgRow;
+              private int shownColor = -1;
+              private int shownBg = -1;
+              private boolean clockOn;
+              private TextView resetWallBtn;
+
+              // plano de fundo escolhido no celular
+              private ImageView wallPreview;
+              private TextView wallSend;
+              private TextView wallInfo;
+              private byte[] wallJpeg;
+
+              // aplicativos da TV
+              private LinearLayout appsBox;
+              private final List<String[]> appList = new ArrayList<>();
+              private String appFilter = "";
+              private final LruCache<String, Bitmap> icons = new LruCache<>(120);
+
+              private final Runnable poll = new Runnable() {
+                  @Override
+                  public void run() {
+                      pollState();
+                      ui.postDelayed(this, 3000L);
+                  }
+              };
+
+              // ------------------------------------------------------------ utilidades visuais
+
+              private int dp(float v) {
+                  return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics()));
+              }
+
+              private GradientDrawable shape(int fill, float radiusDp) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(fill);
+                  d.setCornerRadius(dp(radiusDp));
+                  return d;
+              }
+
+              private GradientDrawable shape(int fill, float radiusDp, int stroke, float strokeDp) {
+                  GradientDrawable d = shape(fill, radiusDp);
+                  d.setStroke(dp(strokeDp), stroke);
+                  return d;
+              }
+
+              private TextView label(String s, int sp, int color, boolean bold) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setTextColor(color);
+                  if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  return t;
+              }
+
+              private void ripple(View v, GradientDrawable base) {
+                  v.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF), base, null));
+              }
+
+              // Botao arredondado com efeito de toque.
+              private TextView pill(String text, int fill, final Runnable action) {
+                  TextView b = label(text, 15, TEXT, true);
+                  b.setGravity(Gravity.CENTER);
+                  b.setPadding(dp(16), dp(12), dp(16), dp(12));
+                  b.setClickable(true);
+                  ripple(b, shape(fill, 14));
+                  b.setOnClickListener(v -> action.run());
+                  return b;
+              }
+
+              private LinearLayout.LayoutParams lp(int w, int h) {
+                  return new LinearLayout.LayoutParams(w, h);
+              }
+
+              private LinearLayout.LayoutParams weight(float wt, int heightDp) {
+                  return new LinearLayout.LayoutParams(0, dp(heightDp), wt);
+              }
+
+              private LinearLayout card(String emoji, String title) {
+                  LinearLayout c = new LinearLayout(this);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setPadding(dp(16), dp(14), dp(16), dp(16));
+                  c.setBackground(shape(CARD, 22, LINE, 1));
+                  LinearLayout head = new LinearLayout(this);
+                  head.setOrientation(LinearLayout.HORIZONTAL);
+                  head.setGravity(Gravity.CENTER_VERTICAL);
+                  TextView icon = label(emoji, 20, TEXT, false);
+                  icon.setGravity(Gravity.CENTER);
+                  icon.setBackground(shape(CARD2, 12));
+                  head.addView(icon, lp(dp(38), dp(38)));
+                  TextView t = label(title, 18, TEXT, true);
+                  t.setPadding(dp(12), 0, 0, 0);
+                  head.addView(t);
+                  c.addView(head, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                  LinearLayout.LayoutParams cl = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  cl.bottomMargin = dp(12);
+                  return c;
+              }
+
+              private void addCard(LinearLayout parent, View c) {
+                  LinearLayout.LayoutParams l = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  l.bottomMargin = dp(12);
+                  parent.addView(c, l);
+              }
+
+              private LinearLayout rowH() {
+                  LinearLayout r = new LinearLayout(this);
+                  r.setOrientation(LinearLayout.HORIZONTAL);
+                  r.setGravity(Gravity.CENTER_VERTICAL);
+                  return r;
+              }
+
+              private View spacer(int heightDp) {
+                  View v = new View(this);
+                  v.setLayoutParams(lp(1, dp(heightDp)));
+                  return v;
+              }
+
+              private SeekBar seek(int min, int max, int value, final OnValue onValue) {
+                  final int lo = min;
+                  SeekBar s = new SeekBar(this);
+                  s.setMax(max - min);
+                  s.setProgress(value - min);
+                  s.setProgressTintList(ColorStateList.valueOf(ACCENT));
+                  s.setThumbTintList(ColorStateList.valueOf(0xFFFFFFFF));
+                  s.setProgressBackgroundTintList(ColorStateList.valueOf(0xFF33405C));
+                  s.setPadding(dp(14), dp(10), dp(14), dp(10));
+                  s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                      @Override
+                      public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                          if (fromUser && !applying) onValue.changed(progress + lo, false);
+                      }
+
+                      @Override
+                      public void onStartTrackingTouch(SeekBar bar) {
+                          dragging++;
+                      }
+
+                      @Override
+                      public void onStopTrackingTouch(SeekBar bar) {
+                          dragging = Math.max(0, dragging - 1);
+                          lastLocalChange = SystemClock.uptimeMillis();
+                          if (!applying) onValue.changed(bar.getProgress() + lo, true);
+                      }
+                  });
+                  return s;
+              }
+
+              private interface OnValue {
+                  void changed(int value, boolean finished);
+              }
+
+              // Manda no maximo ~8 comandos por segundo enquanto o dedo arrasta, e sempre o valor final.
+              private final class Throttle {
+                  private long last;
+                  private Runnable pending;
+                  private final Runnable flush = new Runnable() {
+                      @Override
+                      public void run() {
+                          if (pending != null) {
+                              Runnable r = pending;
+                              pending = null;
+                              last = SystemClock.uptimeMillis();
+                              r.run();
+                          }
+                      }
+                  };
+
+                  void post(Runnable r, boolean force) {
+                      long now = SystemClock.uptimeMillis();
+                      if (force || now - last >= 120) {
+                          ui.removeCallbacks(flush);
+                          pending = null;
+                          last = now;
+                          r.run();
+                      } else {
+                          pending = r;
+                          ui.removeCallbacks(flush);
+                          ui.postDelayed(flush, 120 - (now - last));
+                      }
+                  }
+              }
+
+              private final Throttle volThrottle = new Throttle();
+              private final Throttle brightThrottle = new Throttle();
+              private final Throttle clockThrottle = new Throttle();
+
+              private void toast(String s) {
+                  Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+              }
+
+              // Envia um comando e, se falhar, avisa o motivo.
+              private void command(String path) {
+                  lastLocalChange = SystemClock.uptimeMillis();
+                  client.post(path, r -> {
+                      if (!r.ok) {
+                          toast(r.message());
+                          if (r.code == 401) disconnect();
+                      } else if (r.json != null && dragging == 0) {
+                          applyState(r.json, false);
+                      }
+                  });
+              }
+
+              // ------------------------------------------------------------ ciclo de vida
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().setStatusBarColor(BG);
+                  getWindow().setNavigationBarColor(BG);
+                  getWindow().getDecorView().setBackgroundColor(BG);
+                  client = new RemoteClient(this);
+                  discovery = new TvDiscovery(this, new TvDiscovery.Listener() {
+                      @Override
+                      public void onFound(String name, String host, int port) {
+                          found.put(name, new String[] { host, String.valueOf(port) });
+                          // A TV pareada mudou de IP? Atualiza sozinho.
+                          if (client.paired() && client.tvName() != null
+                                  && client.tvName().equalsIgnoreCase(name) && !host.equals(client.host())) {
+                              client.updateTarget(host, port);
+                              pollState();
+                          }
+                          if (!client.paired()) renderConnection();
+                      }
+
+                      @Override
+                      public void onLost(String name) {
+                          found.remove(name);
+                          if (!client.paired()) renderConnection();
+                      }
+                  });
+
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setVerticalScrollBarEnabled(false);
+                  scroll.setBackgroundColor(BG);
+                  scroll.setFillViewport(true);
+                  page = new LinearLayout(this);
+                  page.setOrientation(LinearLayout.VERTICAL);
+                  page.setPadding(dp(16), dp(18), dp(16), dp(28));
+                  scroll.addView(page);
+
+                  // cabecalho
+                  TextView title = label("TVzk Remote", 30, TEXT, true);
+                  page.addView(title);
+                  TextView sub = label("Controle a sua TV pelo celular", 14, MUTED, false);
+                  sub.setPadding(0, dp(2), 0, dp(16));
+                  page.addView(sub);
+
+                  connectionCard = new LinearLayout(this);
+                  connectionCard.setOrientation(LinearLayout.VERTICAL);
+                  connectionCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+                  connectionCard.setBackground(shape(CARD, 22, LINE, 1));
+                  addCard(page, connectionCard);
+
+                  controls = new LinearLayout(this);
+                  controls.setOrientation(LinearLayout.VERTICAL);
+                  page.addView(controls);
+                  buildControls();
+
+                  setContentView(scroll);
+                  renderConnection();
+                  updateControlsVisibility();
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  discovery.start();
+                  ui.removeCallbacks(poll);
+                  ui.post(poll);
+              }
+
+              @Override
+              protected void onPause() {
+                  ui.removeCallbacks(poll);
+                  discovery.stop();
+                  super.onPause();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  worker.shutdownNow();
+                  super.onDestroy();
+              }
+
+              // ------------------------------------------------------------ conexao
+
+              private void updateControlsVisibility() {
+                  controls.setVisibility(client.paired() && online ? View.VISIBLE : View.GONE);
+              }
+
+              private void disconnect() {
+                  client.forget();
+                  online = false;
+                  failCount = 0;
+                  renderConnection();
+                  updateControlsVisibility();
+              }
+
+              private void renderConnection() {
+                  connectionCard.removeAllViews();
+                  if (client.paired()) {
+                      LinearLayout top = rowH();
+                      View dot = new View(this);
+                      dot.setBackground(shape(online ? GOOD : BAD, 8));
+                      top.addView(dot, lp(dp(12), dp(12)));
+                      LinearLayout names = new LinearLayout(this);
+                      names.setOrientation(LinearLayout.VERTICAL);
+                      names.setPadding(dp(12), 0, 0, 0);
+                      names.addView(label(client.tvName() == null ? "TV" : client.tvName(), 20, TEXT, true));
+                      names.addView(label(online ? "Conectada · " + client.host() : "Procurando a TV… · " + client.host(),
+                              13, online ? GOOD : BAD, false));
+                      top.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                      connectionCard.addView(top);
+                      LinearLayout actions = rowH();
+                      actions.setPadding(0, dp(12), 0, 0);
+                      if (!online) {
+                          TextView retry = pill("Tentar de novo", ACCENT, () -> {
+                              failCount = 0;
+                              pollState();
+                          });
+                          actions.addView(retry, weight(1f, 46));
+                          actions.addView(new View(this), lp(dp(10), 1));
+                      }
+                      actions.addView(pill("Trocar de TV", CARD2, this::disconnect), weight(1f, 46));
+                      connectionCard.addView(actions);
+                      return;
+                  }
+
+                  connectionCard.addView(label("Conectar à TV", 20, TEXT, true));
+                  TextView hint = label("Abra na TV: Configurações da launcher › Conectar celular. "
+                          + "Celular e TV precisam estar no mesmo Wi-Fi.", 13, MUTED, false);
+                  hint.setPadding(0, dp(4), 0, dp(10));
+                  connectionCard.addView(hint);
+
+                  if (found.isEmpty()) {
+                      LinearLayout searching = rowH();
+                      android.widget.ProgressBar pb = new android.widget.ProgressBar(this);
+                      pb.setIndeterminateTintList(ColorStateList.valueOf(ACCENT));
+                      searching.addView(pb, lp(dp(22), dp(22)));
+                      TextView t = label("Procurando TVs na rede…", 14, MUTED, false);
+                      t.setPadding(dp(10), 0, 0, 0);
+                      searching.addView(t);
+                      connectionCard.addView(searching);
+                  } else {
+                      for (final Map.Entry<String, String[]> en : found.entrySet()) {
+                          LinearLayout row = rowH();
+                          row.setPadding(dp(14), dp(12), dp(14), dp(12));
+                          ripple(row, shape(CARD2, 14));
+                          row.setClickable(true);
+                          TextView ic = label("📺", 22, TEXT, false);
+                          row.addView(ic);
+                          LinearLayout names = new LinearLayout(this);
+                          names.setOrientation(LinearLayout.VERTICAL);
+                          names.setPadding(dp(12), 0, 0, 0);
+                          names.addView(label(en.getKey(), 17, TEXT, true));
+                          names.addView(label(en.getValue()[0], 12, MUTED, false));
+                          row.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                          row.addView(label("›", 24, MUTED, false));
+                          row.setOnClickListener(v -> askCode(en.getValue()[0], Integer.parseInt(en.getValue()[1])));
+                          LinearLayout.LayoutParams l = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                          l.bottomMargin = dp(8);
+                          connectionCard.addView(row, l);
+                      }
+                  }
+                  TextView manual = pill("Digitar o endereço (IP) da TV", CARD2, this::askManualIp);
+                  LinearLayout.LayoutParams ml = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  ml.topMargin = dp(6);
+                  connectionCard.addView(manual, ml);
+              }
+
+              private EditText input(String hint, int type, int maxLen) {
+                  EditText e = new EditText(this);
+                  e.setHint(hint);
+                  e.setInputType(type);
+                  e.setSingleLine(true);
+                  if (maxLen > 0) e.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(maxLen) });
+                  e.setPadding(dp(20), dp(14), dp(20), dp(14));
+                  return e;
+              }
+
+              private void askManualIp() {
+                  final EditText e = input("Ex.: 192.168.0.25", InputType.TYPE_CLASS_PHONE, 24);
+                  new AlertDialog.Builder(this)
+                          .setTitle("Endereço da TV")
+                          .setMessage("Ele aparece na tela “Conectar celular” da TV.")
+                          .setView(e)
+                          .setNegativeButton("Cancelar", null)
+                          .setPositiveButton("Continuar", (d, w) -> {
+                              String raw = e.getText().toString().trim();
+                              if (raw.isEmpty()) return;
+                              String host = raw;
+                              int port = RemoteServer.PORT_FIRST;
+                              int i = raw.indexOf(':');
+                              if (i > 0) {
+                                  host = raw.substring(0, i);
+                                  try {
+                                      port = Integer.parseInt(raw.substring(i + 1).trim());
+                                  } catch (NumberFormatException ex) {
+                                      port = RemoteServer.PORT_FIRST;
+                                  }
+                              }
+                              final String fh = host;
+                              final int fp = port;
+                              client.hello(fh, fp, r -> {
+                                  if (r.ok && r.json != null && "tvzk".equals(r.json.optString("app"))) {
+                                      askCode(fh, r.json.optInt("port", fp));
+                                  } else {
+                                      toast("Não achei a TV nesse endereço.");
+                                  }
+                              });
+                          })
+                          .show();
+              }
+
+              private void askCode(final String host, final int port) {
+                  final EditText e = input("Código de 6 dígitos", InputType.TYPE_CLASS_NUMBER, 7);
+                  e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24);
+                  e.setGravity(Gravity.CENTER);
+                  new AlertDialog.Builder(this)
+                          .setTitle("Código da TV")
+                          .setMessage("Digite o código que está aparecendo na tela da TV.")
+                          .setView(e)
+                          .setNegativeButton("Cancelar", null)
+                          .setPositiveButton("Conectar", (d, w) -> {
+                              String code = e.getText().toString().replace(" ", "").trim();
+                              toast("Conectando…");
+                              String phone = Build.MODEL == null ? "Celular" : Build.MODEL;
+                              client.pair(host, port, code, phone, r -> {
+                                  if (r.ok) {
+                                      toast("Conectado!");
+                                      online = true;
+                                      failCount = 0;
+                                      renderConnection();
+                                      updateControlsVisibility();
+                                      pollState();
+                                  } else {
+                                      toast(r.message());
+                                  }
+                              });
+                          })
+                          .show();
+              }
+
+              // ------------------------------------------------------------ estado da TV
+
+              private void pollState() {
+                  if (!client.paired()) return;
+                  client.get("/state", r -> {
+                      if (r.ok && r.json != null) {
+                          boolean was = online;
+                          online = true;
+                          failCount = 0;
+                          if (!was) {
+                              renderConnection();
+                              updateControlsVisibility();
+                          }
+                          if (dragging == 0 && SystemClock.uptimeMillis() - lastLocalChange > 1500) {
+                              applyState(r.json, true);
+                          }
+                      } else if (r.code == 401) {
+                          toast(r.message());
+                          disconnect();
+                      } else {
+                          failCount++;
+                          if (failCount >= 2 && online) {
+                              online = false;
+                              renderConnection();
+                              updateControlsVisibility();
+                          } else if (!online) {
+                              renderConnection();
+                          }
+                      }
+                  });
+              }
+
+              private void applyState(JSONObject s, boolean full) {
+                  applying = true;
+                  try {
+                      if (s.has("vol")) {
+                          int v = s.optInt("vol");
+                          boolean muted = s.optBoolean("muted", false);
+                          volBar.setProgress(v);
+                          volText.setText(muted ? "Mudo" : v + "%");
+                          muteBtn.setText(muted ? "🔇  Ativar som" : "🔊  Mudo");
+                      }
+                      if (s.has("bright")) {
+                          int b = s.optInt("bright");
+                          brightBar.setProgress(b - Prefs.MIN_BRIGHTNESS);
+                          brightText.setText(b + "%");
+                      }
+                      if (s.has("dpad")) {
+                          dpadSupported = s.optBoolean("dpad");
+                          dpadBox.setVisibility(dpadSupported ? View.VISIBLE : View.GONE);
+                          dpadNote.setVisibility(dpadSupported ? View.GONE : View.VISIBLE);
+                      }
+                      if (s.has("customWall")) {
+                          resetWallBtn.setAlpha(s.optBoolean("customWall") ? 1f : 0.45f);
+                      }
+                      JSONObject c = s.optJSONObject("clock");
+                      if (c != null) applyClock(c);
+                  } finally {
+                      applying = false;
+                  }
+              }
+
+              private void applyClock(JSONObject c) {
+                  clockOn = c.optBoolean("on");
+                  clockSwitch.setChecked(clockOn);
+                  int pin = c.optInt("pin");
+                  for (int i = 0; i < 2; i++) {
+                      boolean sel = i == pin;
+                      pinCards[i].setBackground(shape(sel ? 0xFF1B3A6B : CARD2, 14, sel ? ACCENT : LINE, sel ? 2 : 1));
+                  }
+                  clockX.setProgress(c.optInt("x"));
+                  clockXText.setText(c.optInt("x") + "%");
+                  clockY.setProgress(c.optInt("y"));
+                  clockYText.setText(c.optInt("y") + "%");
+                  clockSize.setProgress(c.optInt("size") - ClockPrefs.SIZE_MIN);
+                  clockSizeText.setText(String.valueOf(c.optInt("size")));
+                  clockBgt.setProgress(c.optInt("bgt"));
+                  clockBgtText.setText(c.optInt("bgt") + "%");
+                  int col = c.optInt("color");
+                  if (col != shownColor) {
+                      shownColor = col;
+                      markSwatches(colorRow, col);
+                  }
+                  int bg = c.optInt("bg");
+                  if (bg != shownBg) {
+                      shownBg = bg;
+                      markSwatches(bgRow, bg);
+                  }
+              }
+
+              private void markSwatches(LinearLayout row, int selected) {
+                  for (int i = 0; i < row.getChildCount(); i++) {
+                      View v = row.getChildAt(i);
+                      Object tag = v.getTag();
+                      if (!(tag instanceof int[])) continue;
+                      int[] t = (int[]) tag;
+                      GradientDrawable d = new GradientDrawable();
+                      d.setShape(GradientDrawable.OVAL);
+                      d.setColor(t[1] == 0 ? 0xFF222B3D : t[1]);
+                      d.setStroke(dp(i == selected ? 3 : 1), i == selected ? 0xFFFFFFFF : 0xFF4A5878);
+                      v.setBackground(d);
+                  }
+              }
+
+              // ------------------------------------------------------------ cartoes de funcoes
+
+              private void buildControls() {
+                  buildVolume();
+                  buildBrightness();
+                  buildRemote();
+                  buildWallpaper();
+                  buildClock();
+                  buildApps();
+                  buildMore();
+              }
+
+              private void buildVolume() {
+                  LinearLayout c = card("🔊", "Volume");
+                  LinearLayout top = rowH();
+                  volText = label("--", 30, TEXT, true);
+                  top.addView(volText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  c.addView(top);
+                  volBar = seek(0, 100, 0, (value, finished) -> {
+                      volText.setText(value + "%");
+                      volThrottle.post(() -> command("/volume?set=" + value), finished);
+                  });
+                  c.addView(volBar);
+                  LinearLayout btns = rowH();
+                  TextView minus = pill("−", CARD2, () -> command("/volume?delta=-1"));
+                  muteBtn = pill("🔊  Mudo", CARD2, () -> command("/volume?mute=toggle"));
+                  TextView plus = pill("+", CARD2, () -> command("/volume?delta=1"));
+                  LinearLayout.LayoutParams a = weight(1f, 46);
+                  a.rightMargin = dp(8);
+                  btns.addView(minus, a);
+                  LinearLayout.LayoutParams b = weight(2f, 46);
+                  b.rightMargin = dp(8);
+                  btns.addView(muteBtn, b);
+                  btns.addView(plus, weight(1f, 46));
+                  c.addView(btns);
+                  addCard(controls, c);
+              }
+
+              private void buildBrightness() {
+                  LinearLayout c = card("☀", "Brilho da tela");
+                  brightText = label("--", 30, TEXT, true);
+                  c.addView(brightText);
+                  brightBar = seek(Prefs.MIN_BRIGHTNESS, 100, 100, (value, finished) -> {
+                      brightText.setText(value + "%");
+                      brightThrottle.post(() -> command("/brightness?set=" + value), finished);
+                  });
+                  c.addView(brightBar);
+                  TextView note = label("Escurece a imagem por software (a luz da TV não muda).", 12, MUTED, false);
+                  c.addView(note);
+                  addCard(controls, c);
+              }
+
+              private TextView padKey(String text, final String name) {
+                  TextView b = pill(text, CARD2, () -> command("/key?name=" + name));
+                  b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+                  return b;
+              }
+
+              private void buildRemote() {
+                  LinearLayout c = card("🎮", "Controle remoto");
+
+                  LinearLayout nav = rowH();
+                  LinearLayout.LayoutParams k = weight(1f, 50);
+                  k.rightMargin = dp(8);
+                  nav.addView(padKey("◀  Voltar", "back"), k);
+                  LinearLayout.LayoutParams k2 = weight(1f, 50);
+                  k2.rightMargin = dp(8);
+                  nav.addView(padKey("⌂  Início", "home"), k2);
+                  nav.addView(padKey("▣  Recentes", "recents"), weight(1f, 50));
+                  c.addView(nav);
+
+                  c.addView(spacer(10));
+                  dpadBox = buildDpad();
+                  c.addView(dpadBox);
+                  dpadNote = label("As setas só funcionam se a TV tiver Android 13 ou mais novo.", 12, MUTED, false);
+                  dpadNote.setVisibility(View.GONE);
+                  c.addView(dpadNote);
+
+                  c.addView(spacer(10));
+                  LinearLayout media = rowH();
+                  LinearLayout.LayoutParams m1 = weight(1f, 50);
+                  m1.rightMargin = dp(8);
+                  media.addView(padKey("⏮", "prev"), m1);
+                  LinearLayout.LayoutParams m2 = weight(1.4f, 50);
+                  m2.rightMargin = dp(8);
+                  media.addView(padKey("⏯", "playpause"), m2);
+                  media.addView(padKey("⏭", "next"), weight(1f, 50));
+                  c.addView(media);
+
+                  c.addView(spacer(8));
+                  TextView power = pill("⏻  Menu de energia da TV", 0xFF4A2530, () -> command("/key?name=power"));
+                  c.addView(power);
+                  addCard(controls, c);
+              }
+
+              private View buildDpad() {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setGravity(Gravity.CENTER_HORIZONTAL);
+                  LinearLayout r1 = rowH();
+                  r1.addView(new View(this), weight(1f, 56));
+                  r1.addView(padKey("▲", "up"), weight(1f, 56));
+                  r1.addView(new View(this), weight(1f, 56));
+                  LinearLayout r2 = rowH();
+                  r2.addView(padKey("◀", "left"), weight(1f, 56));
+                  TextView ok = pill("OK", ACCENT, () -> command("/key?name=ok"));
+                  ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+                  r2.addView(ok, weight(1f, 56));
+                  r2.addView(padKey("▶", "right"), weight(1f, 56));
+                  LinearLayout r3 = rowH();
+                  r3.addView(new View(this), weight(1f, 56));
+                  r3.addView(padKey("▼", "down"), weight(1f, 56));
+                  r3.addView(new View(this), weight(1f, 56));
+                  for (LinearLayout r : new LinearLayout[] { r1, r2, r3 }) {
+                      for (int i = 0; i < r.getChildCount(); i++) {
+                          ((LinearLayout.LayoutParams) r.getChildAt(i).getLayoutParams()).setMargins(dp(4), dp(4), dp(4), dp(4));
+                      }
+                      box.addView(r);
+                  }
+                  return box;
+              }
+
+              // ---- plano de fundo
+
+              private void buildWallpaper() {
+                  LinearLayout c = card("🖼", "Plano de fundo da TV");
+                  wallPreview = new ImageView(this);
+                  wallPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                  wallPreview.setBackground(shape(CARD2, 14));
+                  wallPreview.setClipToOutline(true);
+                  wallPreview.setOutlineProvider(new ViewOutlineProvider() {
+                      @Override
+                      public void getOutline(View view, Outline outline) {
+                          outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), dp(14));
+                      }
+                  });
+                  int w = getResources().getDisplayMetrics().widthPixels - dp(16 * 2 + 16 * 2);
+                  LinearLayout.LayoutParams pl = lp(ViewGroup.LayoutParams.MATCH_PARENT, Math.round(w * 9f / 16f));
+                  pl.topMargin = dp(12);
+                  c.addView(wallPreview, pl);
+
+                  wallInfo = label("Escolha uma foto: o app corta em 16:9 e ajusta para a TV.", 12, MUTED, false);
+                  wallInfo.setPadding(0, dp(8), 0, dp(8));
+                  c.addView(wallInfo);
+
+                  TextView pick = pill("Escolher foto da galeria", CARD2, this::pickImage);
+                  c.addView(pick);
+                  c.addView(spacer(8));
+                  wallSend = pill("Enviar para a TV", ACCENT, this::sendWallpaper);
+                  wallSend.setAlpha(0.45f);
+                  c.addView(wallSend);
+                  c.addView(spacer(8));
+                  resetWallBtn = pill("Voltar ao plano de fundo padrão", CARD2, () -> {
+                      toast("Restaurando…");
+                      client.post("/wallpaper/reset", r -> toast(r.ok ? "Plano de fundo padrão restaurado" : r.message()));
+                  });
+                  c.addView(resetWallBtn);
+                  addCard(controls, c);
+              }
+
+              private void pickImage() {
+                  try {
+                      Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                      i.setType("image/*");
+                      i.addCategory(Intent.CATEGORY_OPENABLE);
+                      startActivityForResult(i, REQ_PICK);
+                  } catch (Exception e) {
+                      toast("Não foi possível abrir a galeria.");
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode != REQ_PICK || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+                  final Uri uri = data.getData();
+                  wallInfo.setText("Preparando a imagem…");
+                  wallSend.setAlpha(0.45f);
+                  wallJpeg = null;
+                  worker.execute(() -> {
+                      String err = null;
+                      byte[] jpeg = null;
+                      Bitmap preview = null;
+                      String info = "";
+                      try {
+                          Object[] out = prepareWallpaper(uri);
+                          jpeg = (byte[]) out[0];
+                          preview = (Bitmap) out[1];
+                          info = (String) out[2];
+                      } catch (OutOfMemoryError oom) {
+                          err = "A imagem é grande demais para este celular.";
+                      } catch (Exception ex) {
+                          err = "Não foi possível ler essa imagem.";
+                      }
+                      final String ferr = err;
+                      final byte[] fj = jpeg;
+                      final Bitmap fp = preview;
+                      final String finfo = info;
+                      ui.post(() -> {
+                          if (ferr != null) {
+                              wallInfo.setText(ferr);
+                              return;
+                          }
+                          wallJpeg = fj;
+                          wallPreview.setImageBitmap(fp);
+                          wallInfo.setText(finfo);
+                          wallSend.setAlpha(1f);
+                      });
+                  });
+              }
+
+              // Corta no centro em 16:9 e ajusta para o tamanho certo da TV (no maximo 4K). Retorna {jpeg, previa, texto}.
+              private Object[] prepareWallpaper(Uri uri) throws Exception {
+                  int rot = 0;
+                  try (InputStream in = getContentResolver().openInputStream(uri)) {
+                      if (in != null) {
+                          int o = new ExifInterface(in).getAttributeInt(
+                                  ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+                          if (o == ExifInterface.ORIENTATION_ROTATE_90) rot = 90;
+                          else if (o == ExifInterface.ORIENTATION_ROTATE_180) rot = 180;
+                          else if (o == ExifInterface.ORIENTATION_ROTATE_270) rot = 270;
+                      }
+                  } catch (Exception ignore) {
+                      rot = 0;
+                  }
+                  BitmapFactory.Options bo = new BitmapFactory.Options();
+                  bo.inJustDecodeBounds = true;
+                  try (InputStream in = getContentResolver().openInputStream(uri)) {
+                      BitmapFactory.decodeStream(in, null, bo);
+                  }
+                  if (bo.outWidth <= 0 || bo.outHeight <= 0) throw new Exception("imagem invalida");
+                  int rw = (rot == 90 || rot == 270) ? bo.outHeight : bo.outWidth;
+                  int rh = (rot == 90 || rot == 270) ? bo.outWidth : bo.outHeight;
+                  final float aspect = 16f / 9f;
+                  int cw = ((float) rw / rh > aspect) ? Math.round(rh * aspect) : rw;
+                  int outW = Math.min(3840, cw);
+                  boolean upscaled = false;
+                  if (outW < 1920) {
+                      outW = 1920;
+                      upscaled = true;
+                  }
+                  int outH = Math.round(outW * 9f / 16f);
+                  int sample = 1;
+                  while (cw / (sample * 2) >= outW) sample *= 2;
+
+                  BitmapFactory.Options dopt = new BitmapFactory.Options();
+                  dopt.inSampleSize = sample;
+                  Bitmap bm;
+                  try (InputStream in = getContentResolver().openInputStream(uri)) {
+                      bm = BitmapFactory.decodeStream(in, null, dopt);
+                  }
+                  if (bm == null) throw new Exception("nao decodificou");
+                  if (rot != 0) {
+                      Matrix m = new Matrix();
+                      m.postRotate(rot);
+                      Bitmap r = Bitmap.createBitmap(bm, 0, 0, bm.getWidth(), bm.getHeight(), m, true);
+                      if (r != bm) bm.recycle();
+                      bm = r;
+                  }
+                  int bw = bm.getWidth();
+                  int bh = bm.getHeight();
+                  int ccw;
+                  int cch;
+                  if ((float) bw / bh > aspect) {
+                      cch = bh;
+                      ccw = Math.round(bh * aspect);
+                  } else {
+                      ccw = bw;
+                      cch = Math.round(bw / aspect);
+                  }
+                  ccw = Math.min(ccw, bw);
+                  cch = Math.min(cch, bh);
+                  Bitmap cropped = Bitmap.createBitmap(bm, (bw - ccw) / 2, (bh - cch) / 2, ccw, cch);
+                  if (cropped != bm) bm.recycle();
+                  Bitmap out = Bitmap.createScaledBitmap(cropped, outW, outH, true);
+                  if (out != cropped) cropped.recycle();
+                  ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                  out.compress(Bitmap.CompressFormat.JPEG, 92, bos);
+                  Bitmap preview = Bitmap.createScaledBitmap(out, 960, 540, true);
+                  out.recycle();
+                  String info = outW + "×" + outH + " · " + String.format(Locale.US, "%.1f", bos.size() / 1048576f) + " MB"
+                          + (upscaled ? "\nA foto é pequena e pode ficar um pouco borrada na TV." : "\nPronta para enviar.");
+                  return new Object[] { bos.toByteArray(), preview, info };
+              }
+
+              private void sendWallpaper() {
+                  if (wallJpeg == null) {
+                      toast("Escolha uma foto primeiro.");
+                      return;
+                  }
+                  wallSend.setText("Enviando…");
+                  wallSend.setAlpha(0.45f);
+                  client.upload("/wallpaper", wallJpeg, "image/jpeg", r -> {
+                      wallSend.setText("Enviar para a TV");
+                      wallSend.setAlpha(1f);
+                      toast(r.ok ? "Plano de fundo enviado para a TV" : r.message());
+                  });
+              }
+
+              // ---- relogio
+
+              private void clockSet(String query, boolean force) {
+                  lastLocalChange = SystemClock.uptimeMillis();
+                  clockThrottle.post(() -> client.post("/clock?" + query, r -> {
+                      if (!r.ok) toast(r.message());
+                  }), force);
+              }
+
+              private TextView valueLabel() {
+                  TextView t = label("", 14, 0xFF9CC2FF, true);
+                  t.setGravity(Gravity.RIGHT);
+                  return t;
+              }
+
+              private LinearLayout sliderRow(String name, TextView valueView, SeekBar bar) {
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  LinearLayout top = rowH();
+                  top.addView(label(name, 14, TEXT, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  top.addView(valueView);
+                  box.addView(top);
+                  box.addView(bar);
+                  return box;
+              }
+
+              private void buildClock() {
+                  LinearLayout c = card("🕒", "Relógio na TV");
+
+                  LinearLayout sw = rowH();
+                  sw.addView(label("Relógio flutuante", 16, TEXT, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                  clockSwitch = new Switch(this);
+                  int[][] st = { { android.R.attr.state_checked }, {} };
+                  clockSwitch.setThumbTintList(new ColorStateList(st, new int[] { ACCENT, 0xFF9AA5B8 }));
+                  clockSwitch.setTrackTintList(new ColorStateList(st, new int[] { 0x884C8DFF, 0x44FFFFFF }));
+                  clockSwitch.setOnCheckedChangeListener((b, on) -> {
+                      if (!applying) clockSet("on=" + (on ? 1 : 0), true);
+                  });
+                  sw.addView(clockSwitch);
+                  c.addView(sw);
+                  c.addView(spacer(10));
+
+                  c.addView(label("Onde mostrar", 14, MUTED, false));
+                  String[] names = ClockPrefs.PIN_NAMES;
+                  String[] descs = ClockPrefs.PIN_DESCS;
+                  for (int i = 0; i < 2; i++) {
+                      final int idx = i;
+                      TextView t = label(names[i] + "\n", 15, TEXT, true);
+                      t.setText(names[i] + "\n" + descs[i]);
+                      t.setPadding(dp(14), dp(12), dp(14), dp(12));
+                      t.setClickable(true);
+                      t.setBackground(shape(CARD2, 14, LINE, 1));
+                      t.setOnClickListener(v -> clockSet("pin=" + idx, true));
+                      pinCards[i] = t;
+                      LinearLayout.LayoutParams l = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                      l.topMargin = dp(8);
+                      c.addView(t, l);
+                  }
+                  c.addView(spacer(10));
+
+                  clockXText = valueLabel();
+                  clockX = seek(0, 100, 50, (v, fin) -> {
+                      clockXText.setText(v + "%");
+                      clockSet("x=" + v, fin);
+                  });
+                  c.addView(sliderRow("Posição horizontal", clockXText, clockX));
+
+                  clockYText = valueLabel();
+                  clockY = seek(0, 100, 0, (v, fin) -> {
+                      clockYText.setText(v + "%");
+                      clockSet("y=" + v, fin);
+                  });
+                  c.addView(sliderRow("Posição vertical", clockYText, clockY));
+
+                  clockSizeText = valueLabel();
+                  clockSize = seek(ClockPrefs.SIZE_MIN, ClockPrefs.SIZE_MAX, ClockPrefs.SIZE_DEFAULT, (v, fin) -> {
+                      clockSizeText.setText(String.valueOf(v));
+                      clockSet("size=" + v, fin);
+                  });
+                  c.addView(sliderRow("Tamanho dos números", clockSizeText, clockSize));
+
+                  c.addView(spacer(6));
+                  c.addView(label("Cor dos números", 14, TEXT, false));
+                  colorRow = swatches(ClockPrefs.NUMBER_COLORS, "color");
+                  c.addView(wrapScroll(colorRow));
+
+                  c.addView(spacer(6));
+                  c.addView(label("Fundo do relógio", 14, TEXT, false));
+                  bgRow = swatches(ClockPrefs.BG_COLORS, "bg");
+                  c.addView(wrapScroll(bgRow));
+
+                  clockBgtText = valueLabel();
+                  clockBgt = seek(0, 100, ClockPrefs.BG_TRANSPARENCY_DEFAULT, (v, fin) -> {
+                      clockBgtText.setText(v + "%");
+                      clockSet("bgt=" + v, fin);
+                  });
+                  c.addView(sliderRow("Transparência do fundo", clockBgtText, clockBgt));
+
+                  c.addView(spacer(8));
+                  c.addView(pill("Restaurar padrão", CARD2, () -> clockSet("reset=1", true)));
+                  addCard(controls, c);
+              }
+
+              private View wrapScroll(LinearLayout row) {
+                  HorizontalScrollView hs = new HorizontalScrollView(this);
+                  hs.setHorizontalScrollBarEnabled(false);
+                  hs.setPadding(0, dp(6), 0, dp(6));
+                  hs.addView(row);
+                  return hs;
+              }
+
+              private LinearLayout swatches(int[] colors, final String key) {
+                  LinearLayout row = rowH();
+                  for (int i = 0; i < colors.length; i++) {
+                      final int idx = i;
+                      // para o fundo, o primeiro item e "transparente" (alpha 0): desenhado como circulo escuro com tracinho
+                      int shown = (colors[i] >>> 24) == 0 ? 0 : (colors[i] | 0xFF000000);
+                      TextView v = label((colors[i] >>> 24) == 0 ? "∅" : "", 16, MUTED, true);
+                      v.setGravity(Gravity.CENTER);
+                      v.setTag(new int[] { i, shown });
+                      v.setClickable(true);
+                      v.setOnClickListener(x -> clockSet(key + "=" + idx, true));
+                      LinearLayout.LayoutParams l = lp(dp(40), dp(40));
+                      l.rightMargin = dp(10);
+                      row.addView(v, l);
+                  }
+                  markSwatches(row, 0);
+                  return row;
+              }
+
+              // ---- aplicativos
+
+              private void buildApps() {
+                  LinearLayout c = card("▦", "Abrir aplicativo na TV");
+                  TextView load = pill("Mostrar os aplicativos da TV", CARD2, null);
+                  load.setOnClickListener(v -> loadApps(load));
+                  c.addView(load);
+                  appsBox = new LinearLayout(this);
+                  appsBox.setOrientation(LinearLayout.VERTICAL);
+                  c.addView(appsBox);
+                  addCard(controls, c);
+              }
+
+              private void loadApps(final TextView button) {
+                  button.setText("Carregando…");
+                  client.getBulk("/apps", r -> {
+                      button.setText("Atualizar lista de aplicativos");
+                      if (!r.ok || r.array == null) {
+                          toast(r.message());
+                          return;
+                      }
+                      appList.clear();
+                      for (int i = 0; i < r.array.length(); i++) {
+                          JSONObject o = r.array.optJSONObject(i);
+                          if (o != null) appList.add(new String[] { o.optString("p"), o.optString("l") });
+                      }
+                      buildAppGrid();
+                  });
+              }
+
+              private void buildAppGrid() {
+                  appsBox.removeAllViews();
+                  EditText search = input("Buscar aplicativo", InputType.TYPE_CLASS_TEXT, 30);
+                  search.setTextColor(TEXT);
+                  search.setHintTextColor(MUTED);
+                  search.setBackground(shape(CARD2, 14));
+                  search.setText(appFilter);
+                  search.setSelection(appFilter.length());
+                  LinearLayout.LayoutParams sl = lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  sl.topMargin = dp(10);
+                  sl.bottomMargin = dp(10);
+                  appsBox.addView(search, sl);
+                  final GridLayout grid = new GridLayout(this);
+                  grid.setColumnCount(4);
+                  appsBox.addView(grid);
+                  fillGrid(grid);
+                  search.addTextChangedListener(new TextWatcher() {
+                      @Override
+                      public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+
+                      @Override
+                      public void onTextChanged(CharSequence s, int a, int b, int c) { }
+
+                      @Override
+                      public void afterTextChanged(Editable s) {
+                          appFilter = s.toString().trim().toLowerCase(Locale.getDefault());
+                          fillGrid(grid);
+                      }
+                  });
+              }
+
+              private void fillGrid(GridLayout grid) {
+                  grid.removeAllViews();
+                  int cell = (getResources().getDisplayMetrics().widthPixels - dp(16 * 2 + 16 * 2)) / 4;
+                  for (final String[] app : appList) {
+                      if (!appFilter.isEmpty() && !app[1].toLowerCase(Locale.getDefault()).contains(appFilter)) continue;
+                      LinearLayout item = new LinearLayout(this);
+                      item.setOrientation(LinearLayout.VERTICAL);
+                      item.setGravity(Gravity.CENTER_HORIZONTAL);
+                      item.setPadding(dp(2), dp(8), dp(2), dp(8));
+                      item.setClickable(true);
+                      ripple(item, shape(0x00000000, 12));
+                      final ImageView iv = new ImageView(this);
+                      iv.setBackground(shape(CARD2, 14));
+                      iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                      iv.setPadding(dp(6), dp(6), dp(6), dp(6));
+                      item.addView(iv, lp(dp(54), dp(54)));
+                      TextView name = label(app[1], 11, TEXT, false);
+                      name.setGravity(Gravity.CENTER);
+                      name.setMaxLines(2);
+                      name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                      name.setPadding(0, dp(4), 0, 0);
+                      item.addView(name, lp(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                      item.setOnClickListener(v -> {
+                          toast("Abrindo " + app[1] + " na TV…");
+                          command("/launch?pkg=" + android.net.Uri.encode(app[0]));
+                      });
+                      GridLayout.LayoutParams gl = new GridLayout.LayoutParams();
+                      gl.width = cell;
+                      gl.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                      grid.addView(item, gl);
+
+                      Bitmap cached = icons.get(app[0]);
+                      if (cached != null) {
+                          iv.setImageBitmap(cached);
+                      } else {
+                          client.getBulk("/icon?pkg=" + android.net.Uri.encode(app[0]), r -> {
+                              if (r.ok && r.bytes != null && r.bytes.length > 0) {
+                                  Bitmap b = BitmapFactory.decodeByteArray(r.bytes, 0, r.bytes.length);
+                                  if (b != null) {
+                                      icons.put(app[0], b);
+                                      iv.setImageBitmap(b);
+                                  }
+                              }
+                          });
+                      }
+                  }
+              }
+
+              // ---- mais
+
+              private void buildMore() {
+                  LinearLayout c = card("✨", "Mais funções");
+                  LinearLayout r1 = rowH();
+                  LinearLayout.LayoutParams a = weight(1f, 50);
+                  a.rightMargin = dp(8);
+                  r1.addView(pill("🌙  Protetor de tela", CARD2, () -> command("/screensaver")), a);
+                  r1.addView(pill("📶  Wi-Fi da TV", CARD2, () -> command("/open?what=wifi")), weight(1f, 50));
+                  c.addView(r1);
+                  c.addView(spacer(8));
+                  LinearLayout r2 = rowH();
+                  LinearLayout.LayoutParams b = weight(1f, 50);
+                  b.rightMargin = dp(8);
+                  r2.addView(pill("🖥  Tela e imagem", CARD2, () -> command("/open?what=display")), b);
+                  r2.addView(pill("⚙  Ajustes da TV", CARD2, () -> command("/open?what=settings")), weight(1f, 50));
+                  c.addView(r2);
+                  addCard(controls, c);
+              }
+          }
+          EOF_FILE
+          cat > painel/app/src/main/java/com/painel/lateral/PairActivity.java <<'EOF_FILE'
+          package com.painel.lateral;
+
+          import android.app.Activity;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+
+          import java.util.List;
+
+          // Tela da TV: mostra o codigo e o endereco para parear o celular. Tudo por controle remoto.
+          public class PairActivity extends Activity {
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private TextView codeView;
+              private TextView addrView;
+              private TextView statusView;
+              private TextView phonesView;
+              private View firstButton;
+
+              private final Runnable tick = new Runnable() {
+                  @Override
+                  public void run() {
+                      refresh();
+                      handler.postDelayed(this, 2000L);
+                  }
+              };
+
+              private int dp(float v) {
+                  return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
+                          getResources().getDisplayMetrics()));
+              }
+
+              private TextView text(String s, int sp, int color) {
+                  TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  t.setTextColor(color);
+                  return t;
+              }
+
+              private GradientDrawable bg(boolean focused) {
+                  GradientDrawable d = new GradientDrawable();
+                  d.setColor(focused ? 0xFF1F7AE0 : 0xFF1D2025);
+                  d.setCornerRadius(dp(13));
+                  d.setStroke(dp(2), focused ? 0xFFFFFFFF : 0xFF3A404A);
+                  return d;
+              }
+
+              private View button(String label, Runnable action) {
+                  TextView b = text(label, 18, Color.WHITE);
+                  b.setGravity(Gravity.CENTER);
+                  b.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  b.setPadding(dp(26), dp(13), dp(26), dp(13));
+                  b.setFocusable(true);
+                  b.setClickable(true);
+                  b.setBackground(bg(false));
+                  b.setOnFocusChangeListener((v, f) -> v.setBackground(bg(f)));
+                  b.setOnClickListener(v -> action.run());
+                  if (firstButton == null) firstButton = b;
+                  return b;
+              }
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().setStatusBarColor(Color.BLACK);
+                  getWindow().setNavigationBarColor(Color.BLACK);
+
+                  LinearLayout page = new LinearLayout(this);
+                  page.setOrientation(LinearLayout.VERTICAL);
+                  page.setPadding(dp(48), dp(26), dp(48), dp(26));
+                  page.setBackgroundColor(Color.BLACK);
+                  ScrollView scroll = new ScrollView(this);
+                  scroll.setFillViewport(true);
+                  scroll.setBackgroundColor(Color.BLACK);
+                  scroll.addView(page);
+
+                  TextView title = text("Conectar celular", 27, Color.WHITE);
+                  title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                  page.addView(title);
+
+                  TextView how = text("1. Instale este mesmo app no celular e abra.\n"
+                          + "2. Ele vai achar esta TV sozinho (celular e TV no mesmo Wi-Fi).\n"
+                          + "3. Toque na TV e digite o código abaixo.", 16, 0xFFBFC3C9);
+                  how.setPadding(0, dp(8), 0, dp(14));
+                  page.addView(how);
+
+                  codeView = text("", 54, Color.WHITE);
+                  codeView.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                  codeView.setLetterSpacing(0.18f);
+                  page.addView(codeView);
+
+                  addrView = text("", 16, 0xFF9CC2FF);
+                  addrView.setPadding(0, dp(4), 0, dp(4));
+                  page.addView(addrView);
+
+                  statusView = text("", 16, 0xFFFFC857);
+                  page.addView(statusView);
+
+                  phonesView = text("", 15, 0xFF8C95A5);
+                  phonesView.setPadding(0, dp(4), 0, dp(14));
+                  page.addView(phonesView);
+
+                  LinearLayout bar = new LinearLayout(this);
+                  bar.setOrientation(LinearLayout.HORIZONTAL);
+                  LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                  bp.rightMargin = dp(12);
+                  bar.addView(button("Gerar novo código", () -> {
+                      RemotePrefs.newCode(this);
+                      refresh();
+                  }), bp);
+                  bar.addView(button("Desconectar todos os celulares", () -> {
+                      RemotePrefs.revokeAll(this);
+                      refresh();
+                      Toasts.show(this, "Celulares desconectados", Toast.LENGTH_SHORT);
+                  }), bp);
+                  bar.addView(button("Voltar", this::finish), bp);
+                  page.addView(bar);
+
+                  setContentView(scroll);
+                  if (firstButton != null) firstButton.requestFocus();
+              }
+
+              private void refresh() {
+                  String code = RemotePrefs.code(this);
+                  codeView.setText(code.substring(0, 3) + " " + code.substring(3));
+                  PanelService s = PanelService.instance;
+                  String ip = RemoteServer.localIp();
+                  if (s != null && s.remoteRunning()) {
+                      addrView.setText("Endereço da TV: " + (ip == null ? "sem rede" : ip + ":" + s.remotePort())
+                              + "   (use só se o celular não achar a TV)");
+                      statusView.setText("Controle pelo celular: ativo");
+                      statusView.setTextColor(0xFF69F0AE);
+                  } else {
+                      addrView.setText("");
+                      statusView.setText("Controle pelo celular: desligado. Ative o serviço de acessibilidade do Launcher TVzk.");
+                      statusView.setTextColor(0xFFFFC857);
+                  }
+                  List<String> names = RemotePrefs.pairedNames(this);
+                  if (names.isEmpty()) {
+                      phonesView.setText("Nenhum celular conectado ainda.");
+                  } else {
+                      StringBuilder sb = new StringBuilder("Celulares conectados: ");
+                      for (int i = 0; i < names.size(); i++) {
+                          if (i > 0) sb.append(", ");
+                          sb.append(names.get(i));
+                      }
+                      phonesView.setText(sb.toString());
+                  }
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
                   handler.removeCallbacks(tick);
                   handler.post(tick);
               }
