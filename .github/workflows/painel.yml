@@ -6417,7 +6417,7 @@ jobs:
                           row.setPadding(dp(14), dp(12), dp(14), dp(12));
                           ripple(row, shape(CARD2, 14));
                           row.setClickable(true);
-                          TextView ic = label("📺", 22, TEXT, false);
+                          TextView ic = label("\ud83d\udcfa", 22, TEXT, false);
                           row.addView(ic);
                           LinearLayout names = new LinearLayout(this);
                           names.setOrientation(LinearLayout.VERTICAL);
@@ -6452,7 +6452,7 @@ jobs:
                   final EditText e = input("Ex.: 192.168.0.25", InputType.TYPE_CLASS_PHONE, 24);
                   new AlertDialog.Builder(this)
                           .setTitle("Endereço da TV")
-                          .setMessage("Ele aparece na tela “Conectar celular” da TV.")
+                          .setMessage("Ele aparece na tela \u201cConectar celular\u201d da TV.")
                           .setView(e)
                           .setNegativeButton("Cancelar", null)
                           .setPositiveButton("Continuar", (d, w) -> {
@@ -6551,7 +6551,7 @@ jobs:
                           boolean muted = s.optBoolean("muted", false);
                           volBar.setProgress(v);
                           volText.setText(muted ? "Mudo" : v + "%");
-                          muteBtn.setText(muted ? "🔇  Ativar som" : "🔊  Mudo");
+                          muteBtn.setText(muted ? "\ud83d\udd07  Ativar som" : "\ud83d\udd0a  Mudo");
                       }
                       if (s.has("bright")) {
                           int b = s.optInt("bright");
@@ -6628,7 +6628,7 @@ jobs:
               }
 
               private void buildVolume() {
-                  LinearLayout c = card("🔊", "Volume");
+                  LinearLayout c = card("\ud83d\udd0a", "Volume");
                   LinearLayout top = rowH();
                   volText = label("--", 30, TEXT, true);
                   top.addView(volText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -6640,7 +6640,7 @@ jobs:
                   c.addView(volBar);
                   LinearLayout btns = rowH();
                   TextView minus = pill("−", CARD2, () -> command("/volume?delta=-1"));
-                  muteBtn = pill("🔊  Mudo", CARD2, () -> command("/volume?mute=toggle"));
+                  muteBtn = pill("\ud83d\udd0a  Mudo", CARD2, () -> command("/volume?mute=toggle"));
                   TextView plus = pill("+", CARD2, () -> command("/volume?delta=1"));
                   LinearLayout.LayoutParams a = weight(1f, 46);
                   a.rightMargin = dp(8);
@@ -6654,7 +6654,7 @@ jobs:
               }
 
               private void buildBrightness() {
-                  LinearLayout c = card("☀", "Brilho da tela");
+                  LinearLayout c = card("\u2600", "Brilho da tela");
                   brightText = label("--", 30, TEXT, true);
                   c.addView(brightText);
                   brightBar = seek(Prefs.MIN_BRIGHTNESS, 100, 100, (value, finished) -> {
@@ -6674,15 +6674,15 @@ jobs:
               }
 
               private void buildRemote() {
-                  LinearLayout c = card("🎮", "Controle remoto");
+                  LinearLayout c = card("\ud83c\udfae", "Controle remoto");
 
                   LinearLayout nav = rowH();
                   LinearLayout.LayoutParams k = weight(1f, 50);
                   k.rightMargin = dp(8);
-                  nav.addView(padKey("◀  Voltar", "back"), k);
+                  nav.addView(padKey("\u25c0  Voltar", "back"), k);
                   LinearLayout.LayoutParams k2 = weight(1f, 50);
                   k2.rightMargin = dp(8);
-                  nav.addView(padKey("⌂  Início", "home"), k2);
+                  nav.addView(padKey("\u2302  Início", "home"), k2);
                   nav.addView(padKey("▣  Recentes", "recents"), weight(1f, 50));
                   c.addView(nav);
 
@@ -6697,15 +6697,15 @@ jobs:
                   LinearLayout media = rowH();
                   LinearLayout.LayoutParams m1 = weight(1f, 50);
                   m1.rightMargin = dp(8);
-                  media.addView(padKey("⏮", "prev"), m1);
+                  media.addView(padKey("\u23ee", "prev"), m1);
                   LinearLayout.LayoutParams m2 = weight(1.4f, 50);
                   m2.rightMargin = dp(8);
-                  media.addView(padKey("⏯", "playpause"), m2);
-                  media.addView(padKey("⏭", "next"), weight(1f, 50));
+                  media.addView(padKey("\u23ef", "playpause"), m2);
+                  media.addView(padKey("\u23ed", "next"), weight(1f, 50));
                   c.addView(media);
 
                   c.addView(spacer(8));
-                  TextView power = pill("⏻  Menu de energia da TV", 0xFF4A2530, () -> command("/key?name=power"));
+                  TextView power = pill("\u23fb  Menu de energia da TV", 0xFF4A2530, () -> command("/key?name=power"));
                   c.addView(power);
                   addCard(controls, c);
               }
@@ -6716,17 +6716,17 @@ jobs:
                   box.setGravity(Gravity.CENTER_HORIZONTAL);
                   LinearLayout r1 = rowH();
                   r1.addView(new View(this), weight(1f, 56));
-                  r1.addView(padKey("▲", "up"), weight(1f, 56));
+                  r1.addView(padKey("\u25b2", "up"), weight(1f, 56));
                   r1.addView(new View(this), weight(1f, 56));
                   LinearLayout r2 = rowH();
-                  r2.addView(padKey("◀", "left"), weight(1f, 56));
+                  r2.addView(padKey("\u25c0", "left"), weight(1f, 56));
                   TextView ok = pill("OK", ACCENT, () -> command("/key?name=ok"));
                   ok.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
                   r2.addView(ok, weight(1f, 56));
-                  r2.addView(padKey("▶", "right"), weight(1f, 56));
+                  r2.addView(padKey("\u25b6", "right"), weight(1f, 56));
                   LinearLayout r3 = rowH();
                   r3.addView(new View(this), weight(1f, 56));
-                  r3.addView(padKey("▼", "down"), weight(1f, 56));
+                  r3.addView(padKey("\u25bc", "down"), weight(1f, 56));
                   r3.addView(new View(this), weight(1f, 56));
                   for (LinearLayout r : new LinearLayout[] { r1, r2, r3 }) {
                       for (int i = 0; i < r.getChildCount(); i++) {
@@ -6740,7 +6740,7 @@ jobs:
               // ---- plano de fundo
 
               private void buildWallpaper() {
-                  LinearLayout c = card("🖼", "Plano de fundo da TV");
+                  LinearLayout c = card("\ud83d\uddbc", "Plano de fundo da TV");
                   wallPreview = new ImageView(this);
                   wallPreview.setScaleType(ImageView.ScaleType.CENTER_CROP);
                   wallPreview.setBackground(shape(CARD2, 14));
@@ -6895,7 +6895,7 @@ jobs:
                   out.compress(Bitmap.CompressFormat.JPEG, 92, bos);
                   Bitmap preview = Bitmap.createScaledBitmap(out, 960, 540, true);
                   out.recycle();
-                  String info = outW + "×" + outH + " · " + String.format(Locale.US, "%.1f", bos.size() / 1048576f) + " MB"
+                  String info = outW + "\u00d7" + outH + " · " + String.format(Locale.US, "%.1f", bos.size() / 1048576f) + " MB"
                           + (upscaled ? "\nA foto é pequena e pode ficar um pouco borrada na TV." : "\nPronta para enviar.");
                   return new Object[] { bos.toByteArray(), preview, info };
               }
@@ -6941,7 +6941,7 @@ jobs:
               }
 
               private void buildClock() {
-                  LinearLayout c = card("🕒", "Relógio na TV");
+                  LinearLayout c = card("\ud83d\udd52", "Relógio na TV");
 
                   LinearLayout sw = rowH();
                   sw.addView(label("Relógio flutuante", 16, TEXT, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -7031,7 +7031,7 @@ jobs:
                       final int idx = i;
                       // para o fundo, o primeiro item e "transparente" (alpha 0): desenhado como circulo escuro com tracinho
                       int shown = (colors[i] >>> 24) == 0 ? 0 : (colors[i] | 0xFF000000);
-                      TextView v = label((colors[i] >>> 24) == 0 ? "∅" : "", 16, MUTED, true);
+                      TextView v = label((colors[i] >>> 24) == 0 ? "\u2205" : "", 16, MUTED, true);
                       v.setGravity(Gravity.CENTER);
                       v.setTag(new int[] { i, shown });
                       v.setClickable(true);
@@ -7047,7 +7047,7 @@ jobs:
               // ---- aplicativos
 
               private void buildApps() {
-                  LinearLayout c = card("▦", "Abrir aplicativo na TV");
+                  LinearLayout c = card("\u25a6", "Abrir aplicativo na TV");
                   TextView load = pill("Mostrar os aplicativos da TV", CARD2, null);
                   load.setOnClickListener(v -> loadApps(load));
                   c.addView(load);
@@ -7156,19 +7156,19 @@ jobs:
               // ---- mais
 
               private void buildMore() {
-                  LinearLayout c = card("✨", "Mais funções");
+                  LinearLayout c = card("\u2728", "Mais funções");
                   LinearLayout r1 = rowH();
                   LinearLayout.LayoutParams a = weight(1f, 50);
                   a.rightMargin = dp(8);
-                  r1.addView(pill("🌙  Protetor de tela", CARD2, () -> command("/screensaver")), a);
-                  r1.addView(pill("📶  Wi-Fi da TV", CARD2, () -> command("/open?what=wifi")), weight(1f, 50));
+                  r1.addView(pill("\ud83c\udf19  Protetor de tela", CARD2, () -> command("/screensaver")), a);
+                  r1.addView(pill("\ud83d\udcf6  Wi-Fi da TV", CARD2, () -> command("/open?what=wifi")), weight(1f, 50));
                   c.addView(r1);
                   c.addView(spacer(8));
                   LinearLayout r2 = rowH();
                   LinearLayout.LayoutParams b = weight(1f, 50);
                   b.rightMargin = dp(8);
-                  r2.addView(pill("🖥  Tela e imagem", CARD2, () -> command("/open?what=display")), b);
-                  r2.addView(pill("⚙  Ajustes da TV", CARD2, () -> command("/open?what=settings")), weight(1f, 50));
+                  r2.addView(pill("\ud83d\udda5  Tela e imagem", CARD2, () -> command("/open?what=display")), b);
+                  r2.addView(pill("\u2699  Ajustes da TV", CARD2, () -> command("/open?what=settings")), weight(1f, 50));
                   c.addView(r2);
                   addCard(controls, c);
               }
