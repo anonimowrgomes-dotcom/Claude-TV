@@ -12,7 +12,7 @@ jobs:
         with:
           gradle-version: 8.9
       - name: Criar projeto
-        run: |
+        run: |2
           mkdir -p painel
           base64 -d <<'EOF_B64' | tar xz -C painel
           H4sIAGfcA2sC/+y9CYAkRZUwPByijIoooOIBOSU4VTM1NVXV10zPAdXV1dPN9EV3zcVhk12V1Z1M
