@@ -1,3 +1,4 @@
+
 name: Build Painel Lateral
 on: workflow_dispatch
 jobs:
